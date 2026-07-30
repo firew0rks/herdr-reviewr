@@ -38,6 +38,7 @@ The snapshot:
 | `checks`               | list   | one row per latest check: `name` and `status` (conclusion folded in)        |
 | `comments`             | list   | one row per comment, newest first                                           |
 | `truncated`            | bool   | a capped surface had a further page, so a list is a prefix                  |
+| `issues`               | list   | the issues this PR closes, newest number first (`issues-tab.md`)            |
 
 A `comments` row:
 

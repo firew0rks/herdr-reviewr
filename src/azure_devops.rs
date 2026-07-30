@@ -484,6 +484,9 @@ fn build_snapshot(
         checks,
         comments: merge_comments(rows, pr),
         truncated,
+        // No linked-issue read on this forge yet: the tab renders its empty state rather
+        // than a wrong one (`specs/forge-providers.md`).
+        issues: Vec::new(),
     }
 }
 

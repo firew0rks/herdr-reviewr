@@ -427,10 +427,10 @@ fn the_header_totals_the_scope_and_hides_them_at_zero() {
     r.write("untracked.rs", "one\ntwo\n");
     let app = app_on(&r);
 
-    // 64 columns is the exact fit (the tab strip ends in the two-column reserved
-    // indicator cell). The totals' `−` is multi-byte, so this breaks if the header
-    // measures bytes instead of display width.
-    let header = render_at(&app, 64).lines().next().unwrap().to_string();
+    // 74 columns is the exact fit (the tab strip ends in the two-column reserved
+    // indicator cell); the fourth tab moved it from 64 by its own width. The totals' `−`
+    // is multi-byte, so this breaks if the header measures bytes instead of display width.
+    let header = render_at(&app, 74).lines().next().unwrap().to_string();
     assert!(header.contains("2 changed  +3 −1"), "count, then the totals:\n{header}");
 
     let clean = Repo::init();
@@ -2924,7 +2924,86 @@ fn an_overlong_skipped_tail_never_evicts_the_base_name() {
     app.set_scope(Scope::Branch).unwrap();
     let line0 = dump(&render_size(&app, 80, 20)).lines().next().unwrap().to_string();
     assert!(line0.contains("vs main"), "the resolved name keeps first claim: {line0}");
-    assert!(line0.contains("· feature/x"), "the skipped tail paints in what remains: {line0}");
+    // The tail is asserted as following the name, not by column count: what "remains" is
+    // whatever the tab strip leaves, and the fourth tab spends ten columns of it
+    // (specs/issues-tab.md). The name keeps its claim either way, which is the rule here.
+    assert!(line0.contains("vs main · f"), "the skipped tail paints in what remains: {line0}");
     assert!(line0.contains('…'), "the tail truncates with a trailing ellipsis: {line0}");
     assert!(line0.contains("1 changed"), "the right-aligned stats survive the long tail: {line0}");
+}
+
+#[test]
+fn the_tab_strip_shortens_so_the_scope_chip_survives_a_narrow_bar() {
+    // The file tabs' last-surviving element is the scope chip, so the strip yields to it the
+    // way it yields to the PR chip (specs/tui.md). A click follows the shortened label.
+    let r = Repo::init();
+    r.write("a.rs", "one\n");
+    r.commit_all("init");
+    let app = app_on(&r);
+    let narrow = dump(&render_size(&app, 40, 12)).lines().next().unwrap().to_string();
+    assert!(narrow.contains("[uncommitted]"), "the scope chip survives with four tabs:\n{narrow}");
+    assert!(narrow.contains("4 …"), "every tab keeps its hint key at the floor:\n{narrow}");
+    let area = Rect { x: 0, y: 0, width: 40, height: 12 };
+    let hit = (0..40).find(|&c| {
+        ui::hit_header(area, &app, app.keymap(), c, 0) == Some(HeaderHit::Tab(Tab::Issues))
+    });
+    let cells: Vec<char> = narrow.chars().collect();
+    let hit = hit.expect("the shortened Issues label is still clickable");
+    assert_eq!(cells[hit as usize], '4', "the click lands on the label as painted:\n{narrow}");
+}
+
+#[test]
+fn the_tab_strip_shortens_so_the_chip_survives_a_narrow_bar() {
+    // The chip is the header's last-surviving element, so a fourth tab shortens the strip
+    // rather than pushing the identity off the edge (specs/pr-tab.md, specs/tui.md).
+    let r = Repo::init();
+    r.write("a.rs", "one\n");
+    r.commit_all("init");
+    let mut app = app_on(&r);
+    app.set_tab(herdr_reviewr::app::Tab::Pr).unwrap();
+    app.pr = herdr_reviewr::forge::PrView::Pr(Box::new(herdr_reviewr::forge::PrSnapshot {
+        number: 226,
+        ..common::pr_snapshot()
+    }));
+    let narrow = render_at(&app, 46).lines().next().unwrap().to_string();
+    assert!(narrow.contains("#226"), "the chip survives with four tabs:\n{narrow}");
+    assert!(narrow.contains("1 Cha"), "the strip is still readable:\n{narrow}");
+    let wide = render_at(&app, 120).lines().next().unwrap().to_string();
+    assert!(wide.contains("4 Issues"), "a wide bar keeps whole labels:\n{wide}");
+}
+
+#[test]
+fn the_issues_navigator_lists_each_issue_then_its_own_comments() {
+    use herdr_reviewr::app::{IssueRow, Tab};
+    let r = Repo::init();
+    r.write("a.rs", "one\n");
+    r.commit_all("init");
+    let mut app = app_on(&r);
+    app.set_tab(Tab::Issues).unwrap();
+    app.pr = herdr_reviewr::forge::PrView::Pr(Box::new(herdr_reviewr::forge::PrSnapshot {
+        issues: vec![
+            common::linked_issue(7333, "newer", 2),
+            common::linked_issue(2381, "older", 0),
+        ],
+        ..common::pr_snapshot()
+    }));
+    // Flat and fully expanded: issue, its comments, then the next issue (specs/issues-tab.md).
+    assert_eq!(
+        app.issues_rows(),
+        vec![
+            IssueRow::Issue(0),
+            IssueRow::Comment(0, 0),
+            IssueRow::Comment(0, 1),
+            IssueRow::Issue(1),
+        ]
+    );
+    // An issue row reads the body; a comment row reads the comment, under the same issue.
+    assert!(app.issues_selected_comment().is_none());
+    assert_eq!(app.issues_selected().unwrap().number, 7333);
+    app.issues_move(1);
+    assert!(app.issues_selected_comment().is_some());
+    assert_eq!(app.issues_selected().unwrap().number, 7333);
+    app.issues_move(2);
+    assert_eq!(app.issues_selected().unwrap().number, 2381);
+    assert!(app.issues_selected_comment().is_none());
 }

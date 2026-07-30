@@ -57,13 +57,31 @@ enum Anchor {
     Dir(String),
 }
 
-/// Which top-level tab is active: the changes reviewer, the whole-repo browser, or the
-/// read-only PR mirror.
+/// Which top-level tab is active: the changes reviewer, the whole-repo browser, the
+/// read-only PR mirror, or the issues that PR closes.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Tab {
     Changes,
     AllFiles,
     Pr,
+    Issues,
+}
+
+/// One row of the issues navigator: an issue, or one comment on it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum IssueRow {
+    Issue(usize),
+    Comment(usize, usize),
+}
+
+impl Tab {
+    /// The tab is a mirror of the forge rather than of the working tree. Gates every
+    /// forge-driven behaviour — poll scheduling, the refresh glyph, the wait timer — so a
+    /// second forge tab cannot be added while leaving one of them behind.
+    #[must_use]
+    pub fn is_forge(self) -> bool {
+        matches!(self, Tab::Pr | Tab::Issues)
+    }
 }
 
 /// What a pending PR refresh may do to a fetch already in flight: an ambient trigger —
@@ -583,6 +601,15 @@ pub struct App {
     pr_nav_max_scroll: std::cell::Cell<usize>,
     /// A cursor move requests the smallest navigator scroll that reveals the selection.
     reveal_pr_nav: std::cell::Cell<bool>,
+    /// The issues tab's own cursor, read scroll, and navigator scroll. Separate fields rather
+    /// than shared PR ones: the tabs keep their own place, so returning to either lands where
+    /// you left it (`specs/tui.md`).
+    pub(crate) issues_cursor: usize,
+    pub(crate) issues_read_scroll: usize,
+    issues_read_max_scroll: std::cell::Cell<usize>,
+    issues_nav_scroll: std::cell::Cell<usize>,
+    issues_nav_max_scroll: std::cell::Cell<usize>,
+    reveal_issues_nav: std::cell::Cell<bool>,
     /// The PR refresh awaiting dispatch, if any; the event loop services it after drawing, so
     /// a `loading` frame shows before the blocking CLI calls run.
     pub pr_pending: Option<RefreshKind>,
@@ -733,6 +760,12 @@ impl App {
             pr_nav_scroll: std::cell::Cell::new(0),
             pr_nav_max_scroll: std::cell::Cell::new(usize::MAX),
             reveal_pr_nav: std::cell::Cell::new(true),
+            issues_cursor: 0,
+            issues_read_scroll: 0,
+            issues_read_max_scroll: std::cell::Cell::new(usize::MAX),
+            issues_nav_scroll: std::cell::Cell::new(0),
+            issues_nav_max_scroll: std::cell::Cell::new(usize::MAX),
+            reveal_issues_nav: std::cell::Cell::new(true),
             pr_pending: None,
             world_request: None,
             search: None,
@@ -1890,7 +1923,7 @@ impl App {
         // Entering the PR tab leaves the file tabs frozen in place and fetches the PR. A
         // `loading` frame draws before the blocking fetch the event loop services, and a
         // re-entry keeps the last snapshot on screen while it refetches.
-        if tab == Tab::Pr {
+        if tab.is_forge() {
             self.request_pr_refresh(RefreshKind::Ambient);
             return Ok(());
         }
@@ -2053,6 +2086,118 @@ impl App {
     #[must_use]
     pub fn pr_row_count(&self) -> usize {
         self.pr_snapshot().map_or(0, |s| s.comments.len() + self.pr_description_offset())
+    }
+
+    /// The issues the resolved PR closes, newest number first. Empty without a PR, in a
+    /// degraded view, and on a forge with no linked-issue read (`specs/issues-tab.md`).
+    #[must_use]
+    pub fn issues(&self) -> &[forge::LinkedIssue] {
+        self.pr_snapshot().map_or(&[], |s| s.issues.as_slice())
+    }
+
+    /// Every navigator row, in paint order: each issue followed by its own comments.
+    ///
+    /// Flat and fully expanded, like the PR tab's one list of description-then-comments — not a
+    /// drill-down. An expansion that followed the cursor would make the row list depend on the
+    /// selection that indexes it, and a PR closes one or two issues in practice, so there is
+    /// nothing to collapse.
+    #[must_use]
+    pub fn issues_rows(&self) -> Vec<IssueRow> {
+        self.issues()
+            .iter()
+            .enumerate()
+            .flat_map(|(i, issue)| {
+                std::iter::once(IssueRow::Issue(i))
+                    .chain((0..issue.comments.len()).map(move |c| IssueRow::Comment(i, c)))
+            })
+            .collect()
+    }
+
+    /// The row under the navigator cursor.
+    #[must_use]
+    pub fn issues_selected_row(&self) -> Option<IssueRow> {
+        self.issues_rows().get(self.issues_cursor).copied()
+    }
+
+    /// The issue under the cursor — the issue itself, or the one owning the selected comment.
+    #[must_use]
+    pub fn issues_selected(&self) -> Option<&forge::LinkedIssue> {
+        let i = match self.issues_selected_row()? {
+            IssueRow::Issue(i) | IssueRow::Comment(i, _) => i,
+        };
+        self.issues().get(i)
+    }
+
+    /// The comment under the cursor, or `None` on an issue row (the read pane shows the body).
+    #[must_use]
+    pub fn issues_selected_comment(&self) -> Option<&forge::Comment> {
+        match self.issues_selected_row()? {
+            IssueRow::Issue(_) => None,
+            IssueRow::Comment(i, c) => self.issues().get(i)?.comments.get(c),
+        }
+    }
+
+    /// Move the navigator cursor by `delta`, resetting the read pane to the top.
+    pub fn issues_move(&mut self, delta: isize) {
+        let n = self.issues_rows().len();
+        if n == 0 {
+            return;
+        }
+        self.issues_select(step(self.issues_cursor, delta, n));
+    }
+
+    /// Select navigator row `i`, resetting the read pane — the cursor-move and read-scroll
+    /// reset stay paired here, as they do for the PR tab.
+    pub(crate) fn issues_select(&mut self, i: usize) {
+        self.issues_cursor = i;
+        self.issues_read_scroll = 0;
+        self.reveal_issues_nav.set(true);
+    }
+
+    pub(crate) fn issues_scroll_nav(&mut self, delta: isize) {
+        self.reveal_issues_nav.set(false);
+        self.issues_nav_scroll.set(clamp_scroll(
+            self.issues_nav_scroll.get(),
+            delta,
+            self.issues_nav_max_scroll.get(),
+        ));
+    }
+
+    pub(crate) fn issues_scroll_read(&mut self, delta: isize) {
+        self.issues_read_scroll =
+            clamp_scroll(self.issues_read_scroll, delta, self.issues_read_max_scroll.get());
+    }
+
+    pub(crate) fn note_issues_read_max_scroll(&self, max: usize) {
+        self.issues_read_max_scroll.set(max);
+    }
+
+    pub(crate) fn note_issues_nav_max_scroll(&self, max: usize) {
+        self.issues_nav_max_scroll.set(max);
+    }
+
+    pub(crate) fn issues_nav_scroll(&self) -> usize {
+        self.issues_nav_scroll.get()
+    }
+
+    pub(crate) fn set_issues_nav_scroll(&self, scroll: usize) {
+        self.issues_nav_scroll.set(scroll);
+    }
+
+    pub(crate) fn take_reveal_issues_nav(&self) -> bool {
+        self.reveal_issues_nav.replace(false)
+    }
+
+    /// Open the selected issue in the browser. Inert with no selection, matching `pr_open`
+    /// on a PR that never resolved.
+    pub fn issues_open(&mut self) {
+        let Some((number, url)) = self.issues_selected().map(|i| (i.number, i.url.clone())) else {
+            return;
+        };
+        match crate::browser::open(&url) {
+            Ok(()) => self.status = format!("opened #{number} in browser"),
+            Err(e) => self.status = e.to_string(),
+        }
     }
 
     /// The comment under the navigator cursor, for the read pane. `None` on the pinned
@@ -2339,7 +2484,7 @@ impl App {
     /// the expansion and never disturbs the file tab the reviewer will return to (`overview.md`
     /// Continuity).
     pub fn escape(&mut self) {
-        if self.tab != Tab::Pr {
+        if !self.tab.is_forge() {
             if self.select_anchor.is_some() {
                 self.clear_selection();
                 return;

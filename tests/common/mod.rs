@@ -133,6 +133,7 @@ pub fn pr_snapshot() -> herdr_reviewr::forge::PrSnapshot {
         checks: Vec::new(),
         comments: Vec::new(),
         truncated: false,
+        issues: Vec::new(),
     }
 }
 
@@ -166,4 +167,35 @@ pub fn land_world(app: &mut App) {
     let snapshot = herdr_reviewr::world::build(&app.world_input()).unwrap();
     app.reconcile_world(snapshot);
     app.world_request = None;
+}
+
+/// A linked issue with `comments` plain comments, newest first.
+#[allow(dead_code)]
+pub fn linked_issue(
+    number: u64,
+    title: &str,
+    comments: usize,
+) -> herdr_reviewr::forge::LinkedIssue {
+    use herdr_reviewr::forge::{Comment, CommentKind, IssueState, LinkedIssue};
+    LinkedIssue {
+        number,
+        title: title.into(),
+        url: format!("https://example.test/issues/{number}"),
+        body: format!("body of #{number}"),
+        state: IssueState::Open,
+        comments: (0..comments)
+            .map(|i| Comment {
+                kind: CommentKind::Comment,
+                author: format!("a{i}"),
+                author_is_bot: false,
+                anchor: "comment".into(),
+                body: format!("comment {i}"),
+                snippet: None,
+                created_at: format!("2026-07-0{}T10:00:00Z", i + 1),
+                is_resolved: false,
+                is_outdated: false,
+                reply_count: 0,
+            })
+            .collect(),
+    }
 }

@@ -46,7 +46,7 @@ pub fn render(frame: &mut Frame, app: &App) {
     // The search screen replaces the body; the header and footer chrome stay
     // (specs/search.md).
     if app.mode == Mode::Search {
-        if app.tab == Tab::Pr {
+        if app.tab.is_forge() {
             render_pr_header(frame, app, p.tab);
         } else {
             render_tab_bar(frame, app, p.tab);
@@ -56,7 +56,11 @@ pub fn render(frame: &mut Frame, app: &App) {
         return;
     }
 
-    if app.tab == Tab::Pr {
+    if app.tab == Tab::Issues {
+        render_pr_header(frame, app, p.tab);
+        render_issues_read(frame, app, p.diff);
+        render_issues_nav(frame, app, p.files);
+    } else if app.tab == Tab::Pr {
         render_pr_header(frame, app, p.tab);
         render_pr_read(frame, app, p.diff);
         // `PR` never hides its navigator (specs/tui.md), so no hidden gate here.
@@ -457,7 +461,7 @@ pub fn hit_header(area: Rect, app: &App, keymap: &Keymap, col: u16, row: u16) ->
     if row != area.y {
         return None;
     }
-    let spans = tab_spans(keymap);
+    let spans = tab_spans(keymap, tab_cap(app, area.width));
     for &(tab, start, end) in &spans {
         if (start as u16..end as u16).contains(&col) {
             return Some(HeaderHit::Tab(tab));
@@ -479,14 +483,15 @@ pub fn hit_header(area: Rect, app: &App, keymap: &Keymap, col: u16, row: u16) ->
     None
 }
 
-/// The three tabs and their labels, left to right, each led by its `tab-*` action's hint key
+/// The four tabs and their labels, left to right, each led by its `tab-*` action's hint key
 /// (`specs/input.md`). Column math uses display width, since a bound hint key can be wide.
-fn tab_labels(keymap: &Keymap) -> [(Tab, String); 3] {
+fn tab_labels(keymap: &Keymap) -> [(Tab, String); 4] {
     use crate::keymap::Action as K;
     [
         (Tab::Changes, format!("{} Changes", keymap.hint(K::TabChanges))),
         (Tab::AllFiles, format!("{} Files", keymap.hint(K::TabAllFiles))),
         (Tab::Pr, format!("{} PR", keymap.hint(K::TabPr))),
+        (Tab::Issues, format!("{} Issues", keymap.hint(K::TabIssues))),
     ]
 }
 const HEADER_LEAD: &str = " ";
@@ -507,11 +512,16 @@ fn indicator_glyph(app: &App) -> &'static str {
 }
 
 /// Each tab's `(tab, start_col, end_col)` in the header, the single source the bar paints and
-/// the click hit-tests against.
-fn tab_spans(keymap: &Keymap) -> Vec<(Tab, usize, usize)> {
+/// the click hit-tests against. `cap` is the label cap the strip is painted with, so a
+/// shortened strip is clicked where it reads, not where whole labels would have been.
+fn tab_spans(keymap: &Keymap, cap: Option<usize>) -> Vec<(Tab, usize, usize)> {
     let mut col = HEADER_LEAD.len();
     let mut out = Vec::new();
     for (i, (tab, label)) in tab_labels(keymap).iter().enumerate() {
+        let label = match cap {
+            Some(max) => truncate_width(label, max),
+            None => label.clone(),
+        };
         if i > 0 {
             col += TAB_GAP.len();
         }
@@ -556,7 +566,7 @@ fn base_label(app: &App) -> Option<(String, String, String)> {
 fn base_parts(app: &App, keymap: &Keymap, width: u16) -> Option<(String, String, String)> {
     let (lead, name, tail) = base_label(app)?;
     // Everything else on the line plus the base's own gap and the suffix's minimum gap.
-    let fixed = header_prefix_len(&tab_spans(keymap))
+    let fixed = header_prefix_len(&tab_spans(keymap, tab_cap(app, width)))
         + scope_chip(app).len()
         + BASE_GAP.len()
         + lead.width()
@@ -589,10 +599,57 @@ fn header_suffix(app: &App) -> String {
 /// (the active one bright + underlined, the inactive ones at `SUBTEXT0`), and the trailing gap
 /// before each header's own suffix. One source so the two headers can't drift.
 fn tab_bar_spans(app: &App) -> Vec<Span<'static>> {
+    tab_bar_spans_capped(app, None)
+}
+
+/// The columns the strip may claim on a header of `width`.
+///
+/// Each header has one element that outlives everything else: the PR's identity chip on a
+/// forge tab (`specs/pr-tab.md`), the scope chip on a file tab (`specs/tui.md`). The strip
+/// yields to it. Without this a fourth tab pushes that element off a narrow bar entirely,
+/// which is the one thing the narrow-bar rule promises will not happen.
+fn tab_strip_budget(app: &App, width: u16) -> usize {
+    let reserved = if app.tab.is_forge() {
+        match &app.pr {
+            forge::PrView::Pr(s) => pr_chip_width(app, s) + 2,
+            _ => 0,
+        }
+    } else {
+        scope_chip(app).len() + HEADER_LEAD.len()
+    };
+    (width as usize).saturating_sub(reserved)
+}
+
+/// The label cap the strip is painted with on a header of `width`, or `None` while the whole
+/// labels fit. One source for the paint and the click hit-test, so they cannot disagree about
+/// where a shortened tab sits.
+fn tab_cap(app: &App, width: u16) -> Option<usize> {
+    let budget = tab_strip_budget(app, width);
+    if tab_bar_spans(app).iter().map(Span::width).sum::<usize>() <= budget {
+        return None;
+    }
+    // Shrink every label by the same cap so the strip stays a readable row of equals rather
+    // than one full label beside stubs. The floor keeps each tab's hint key legible.
+    Some(
+        (3..=12)
+            .rev()
+            .find(|&cap| {
+                tab_bar_spans_capped(app, Some(cap)).iter().map(Span::width).sum::<usize>()
+                    <= budget
+            })
+            .unwrap_or(3),
+    )
+}
+
+fn tab_bar_spans_capped(app: &App, cap: Option<usize>) -> Vec<Span<'static>> {
     let p = app.palette();
     let bar = Style::default().bg(p.surface0);
     let mut spans = vec![Span::styled(HEADER_LEAD, bar)];
     for (i, (tab, label)) in tab_labels(app.keymap()).into_iter().enumerate() {
+        let label = match cap {
+            Some(max) => truncate_width(&label, max),
+            None => label,
+        };
         if i > 0 {
             spans.push(Span::styled(TAB_GAP, bar));
         }
@@ -618,7 +675,8 @@ fn render_tab_bar(frame: &mut Frame, app: &App, area: Rect) {
         BASE_GAP.len() + lead.width() + name.width() + tail.width()
     });
     let suffix = header_suffix(app);
-    let prefix = header_prefix_len(&tab_spans(app.keymap()));
+    let cap = tab_cap(app, area.width);
+    let prefix = header_prefix_len(&tab_spans(app.keymap(), cap));
     // The suffix keeps the same edge pad as the tab strip's lead.
     let used = prefix + chip.len() + base_width + suffix.width() + HEADER_LEAD.len();
     // Right-align the suffix; at least one gap column when the bar overflows.
@@ -628,7 +686,7 @@ fn render_tab_bar(frame: &mut Frame, app: &App, area: Rect) {
     // clickable scope control accented so it reads as a button.
     let p = app.palette();
     let bar = Style::default().bg(p.surface0);
-    let mut spans = tab_bar_spans(app);
+    let mut spans = tab_bar_spans_capped(app, cap);
     spans.push(Span::styled(chip, bar.fg(p.yellow).add_modifier(Modifier::BOLD)));
     if let Some((lead, name, tail)) = base {
         // An empty lead is the `no base` state, worn as a warning; a resolved name wears the
@@ -2787,9 +2845,11 @@ fn selectable_row(
 fn render_pr_header(frame: &mut Frame, app: &App, area: Rect) {
     let p = app.palette();
     let bar = Style::default().bg(p.surface0);
-    let mut spans = tab_bar_spans(app);
-    let lead_tabs: usize = spans.iter().map(Span::width).sum();
     let w = area.width as usize;
+    // The chip's columns are reserved before the strip claims them: the strip shortens, the
+    // chip stays (`tab_cap`). With no PR there is no chip, so the strip keeps the bar.
+    let mut spans = tab_bar_spans_capped(app, tab_cap(app, area.width));
+    let lead_tabs: usize = spans.iter().map(Span::width).sum();
 
     // A resolved PR shows its identity chip; with no PR the header carries nothing — the read
     // pane is the single home for the empty/degraded message, not repeated across all regions.
@@ -2810,8 +2870,8 @@ fn render_pr_header(frame: &mut Frame, app: &App, area: Rect) {
         let head_w =
             if w.saturating_sub(lead_tabs + chip_w + 2 + head_w) >= 8 { head_w } else { 0 };
         // The title fills the gap left of the branch + chip, right-aligned (a leading pad).
-        let name =
-            truncate_width(&s.title, w.saturating_sub(lead_tabs + chip_w + 2 + head_w).max(4));
+        // No floor: a bar with no room for a title shows none rather than overflowing the chip.
+        let name = truncate_width(&s.title, w.saturating_sub(lead_tabs + chip_w + 2 + head_w));
         let pad = w.saturating_sub(lead_tabs + name.width() + head_w + 2 + chip_w);
         spans.push(Span::styled(" ".repeat(pad), bar));
         spans.push(Span::styled(name, bar.fg(p.subtext0)));
@@ -3341,5 +3401,140 @@ fn inner_rect(outer: Rect) -> Rect {
         y: outer.y.saturating_add(1),
         width: outer.width.saturating_sub(2),
         height: outer.height.saturating_sub(2),
+    }
+}
+
+/// The linked-issues navigator: one row per issue the PR closes, newest number first.
+/// Flat, unlike the PR navigator — there are no sections and every row is selectable.
+fn render_issues_nav(frame: &mut Frame, app: &App, area: Rect) {
+    let p = app.palette();
+    let block = bordered("Linked issues", app.focus == Focus::Files, p);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let width = inner.width as usize;
+    let viewport = inner.height as usize;
+    let issues = app.issues();
+    let rows = app.issues_rows();
+    let max_scroll = rows.len().saturating_sub(viewport);
+    app.note_issues_nav_max_scroll(max_scroll);
+    // A cursor move asks for the smallest scroll that reveals the selection; the wheel does not.
+    let scroll = if app.take_reveal_issues_nav() {
+        let cursor = app.issues_cursor;
+        let current = app.issues_nav_scroll().min(max_scroll);
+        current.clamp(cursor.saturating_sub(viewport.saturating_sub(1)), cursor)
+    } else {
+        app.issues_nav_scroll().min(max_scroll)
+    };
+    app.set_issues_nav_scroll(scroll);
+    let now = std::time::SystemTime::now();
+    let items: Vec<ListItem> = rows
+        .iter()
+        .enumerate()
+        .skip(scroll)
+        .take(viewport)
+        .map(|(row_i, row)| {
+            let selected = row_i == app.issues_cursor;
+            let spans = match row {
+                crate::app::IssueRow::Issue(i) => {
+                    let issue = &issues[*i];
+                    // A closed issue is dimmed rather than dropped: a PR that closes an
+                    // already-closed issue is worth seeing, not hiding.
+                    let state_color = match issue.state {
+                        forge::IssueState::Open => p.green,
+                        forge::IssueState::Closed => p.overlay0,
+                    };
+                    vec![
+                        Span::styled(
+                            format!("#{} ", issue.number),
+                            Style::default().fg(p.overlay0),
+                        ),
+                        Span::raw(issue.title.clone()),
+                        Span::styled(
+                            format!(" {}", issue.state.label()),
+                            Style::default().fg(state_color),
+                        ),
+                    ]
+                }
+                // Indented under its issue, `@author age` like a PR comment row. A human author
+                // is emphasized over the bots, as on the PR tab.
+                crate::app::IssueRow::Comment(i, c) => {
+                    let cm = &issues[*i].comments[*c];
+                    let author = if cm.author_is_bot { p.overlay0 } else { p.subtext0 };
+                    vec![
+                        Span::styled("  @", Style::default().fg(p.overlay0)),
+                        Span::styled(cm.author.clone(), Style::default().fg(author)),
+                        Span::styled(
+                            format!("  {}", forge::relative_age(&cm.created_at, now)),
+                            Style::default().fg(p.overlay0),
+                        ),
+                    ]
+                }
+            };
+            selectable_row(p, spans, width, selected.then(|| p.cursor_bg(true)))
+        })
+        .collect();
+    frame.render_widget(List::new(items), inner);
+}
+
+/// The selected issue's body as markdown, or the empty state when the PR closes none.
+fn render_issues_read(frame: &mut Frame, app: &App, area: Rect) {
+    let p = app.palette();
+    let selected = app.issues_selected();
+    let comment = app.issues_selected_comment();
+    let title = match (comment, selected) {
+        (Some(cm), Some(issue)) => format!("@{} · #{}", cm.author, issue.number),
+        (_, Some(issue)) => format!("#{} {}", issue.number, issue.title),
+        _ => app.pr_forge.abbr().to_string(),
+    };
+    let block = bordered(&title, app.focus == Focus::Diff, p);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let width = inner.width as usize;
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    let mut body_meta: Option<(usize, crate::markdown::Rendered)> = None;
+    if let Some(cm) = comment {
+        let mut rendered = app.markdown_render(&cm.body, width.max(1));
+        let offset = lines.len();
+        lines.append(&mut rendered.lines);
+        body_meta = Some((offset, rendered));
+    } else if let Some(issue) = selected {
+        let mut rendered = app.markdown_render(&issue.body, width.max(1));
+        let offset = lines.len();
+        lines.append(&mut rendered.lines);
+        body_meta = Some((offset, rendered));
+    } else {
+        let refresh = app.keymap().hint(crate::keymap::Action::Refresh);
+        for piece in wrap_text(&issues_empty_msg(&app.pr, app.pr_forge, refresh), width.max(1)) {
+            lines.push(Line::from(Span::styled(piece, Style::default().fg(p.overlay0))));
+        }
+    }
+    let max = lines.len().saturating_sub(inner.height as usize);
+    app.note_issues_read_max_scroll(max);
+    let scroll = app.issues_read_scroll.min(max);
+    if let Some((offset, rendered)) = &body_meta {
+        note_markdown_regions(app, rendered, inner, scroll, *offset);
+    }
+    frame.render_widget(Paragraph::new(lines).scroll((saturating_row(scroll), 0)), inner);
+    render_overflow_scrollbar(
+        frame,
+        Rect::new(area.x, inner.y, area.width, inner.height),
+        max,
+        scroll,
+        p,
+    );
+}
+
+/// The issues tab's empty states. A resolved PR that closes nothing is the tab's own message;
+/// every other state is the PR tab's, so the two tabs never disagree about why they are blank.
+fn issues_empty_msg(
+    view: &forge::PrView,
+    forge: crate::git::Forge,
+    refresh: crate::keymap::Key,
+) -> String {
+    match view {
+        forge::PrView::Pr(_) => {
+            format!("No issues linked to this {}. Link one with \"Closes #n\".", forge.noun())
+        }
+        other => pr_empty_msg(other, forge, refresh),
     }
 }

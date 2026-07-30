@@ -143,6 +143,41 @@ pub struct PrSnapshot {
     /// A capped surface (reviews/comments/threads/checks) had more rows than the 100-row fetch
     /// returned — the lists shown are a prefix, not the whole set. Drives a "more on the forge" marker.
     pub truncated: bool,
+    /// The issues this PR closes, newest number first (`specs/issues-tab.md`). Only closing
+    /// references: an issue the body merely mentions is context, not the work being finished,
+    /// and the two sets differ in practice. Empty on forges with no linked-issue read.
+    pub issues: Vec<LinkedIssue>,
+}
+
+/// One issue the PR closes. The body and its thread ride along so the tab renders without a
+/// second fetch (`specs/issues-tab.md`, `IT-NO-FETCH`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LinkedIssue {
+    pub number: u64,
+    pub title: String,
+    pub url: String,
+    pub body: String,
+    pub state: IssueState,
+    /// The issue's conversation, newest first — the same ordering and the same `Comment` shape
+    /// the PR tab renders, so one read pane serves both.
+    pub comments: Vec<Comment>,
+}
+
+/// The issue lifecycle. Narrower than `PrState`: an issue has no draft or merged form.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IssueState {
+    Open,
+    Closed,
+}
+
+impl IssueState {
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            IssueState::Open => "open",
+            IssueState::Closed => "closed",
+        }
+    }
 }
 
 /// The PR lifecycle.
@@ -842,7 +877,10 @@ fn build_detail_query(number: u64) -> String {
          reviews(last:100){{pageInfo{{hasPreviousPage}} nodes{{author{{login}} body submittedAt}}}} \
          comments(last:100){{pageInfo{{hasPreviousPage}} nodes{{author{{login}} body createdAt}}}} \
          reviewThreads(last:100){{pageInfo{{hasPreviousPage}} nodes{{isResolved isOutdated path line \
-         comments(first:1){{totalCount nodes{{author{{login}} body createdAt diffHunk}}}}}}}}}}}}}}"
+         comments(first:1){{totalCount nodes{{author{{login}} body createdAt diffHunk}}}}}}}} \
+         closingIssuesReferences(first:20){{pageInfo{{hasNextPage}} nodes{{number title url body state \
+         comments(last:50){{pageInfo{{hasPreviousPage}} nodes{{author{{login}} body createdAt}}}}}}}}\
+         }}}}}}"
     )
 }
 
@@ -894,7 +932,8 @@ fn build_snapshot(node: &Value, sync: Sync) -> PrSnapshot {
     let truncated = more(contexts)
         || more(&node["reviews"])
         || more(&node["comments"])
-        || more(&node["reviewThreads"]);
+        || more(&node["reviewThreads"])
+        || more(&node["closingIssuesReferences"]);
     PrSnapshot {
         number: node["number"].as_u64().unwrap_or_default(),
         title: node["title"].as_str().unwrap_or_default().to_string(),
@@ -915,7 +954,55 @@ fn build_snapshot(node: &Value, sync: Sync) -> PrSnapshot {
             &node["reviewThreads"]["nodes"],
         ),
         truncated,
+        issues: normalize_issues(&node["closingIssuesReferences"]["nodes"]),
     }
+}
+
+/// The closing references, newest number first. GitHub returns them in link order, which is the
+/// order someone happened to type `Fixes #n` in — not information. Number descending puts the
+/// issue the PR was opened against on top when several are linked.
+/// One issue's conversation, newest first. Every row is an unanchored `comment` card: an issue
+/// has no reviews, no diff threads, and nothing to resolve, so the three fields that carry those
+/// stay at their empty values and the PR tab's renderer needs no special case.
+fn issue_comments(nodes: &Value) -> Vec<Comment> {
+    let mut out: Vec<Comment> = nodes
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|c| {
+            let body = c["body"].as_str().unwrap_or("").trim().to_string();
+            (!body.is_empty()).then(|| {
+                prose_comment(CommentKind::Comment, &c["author"], body, c["createdAt"].as_str())
+            })
+        })
+        .collect();
+    out.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    out
+}
+
+fn normalize_issues(nodes: &Value) -> Vec<LinkedIssue> {
+    let mut issues: Vec<LinkedIssue> = nodes
+        .as_array()
+        .map(|rows| {
+            rows.iter()
+                .filter_map(|n| {
+                    Some(LinkedIssue {
+                        number: n["number"].as_u64()?,
+                        title: n["title"].as_str().unwrap_or_default().to_string(),
+                        url: n["url"].as_str().unwrap_or_default().to_string(),
+                        body: n["body"].as_str().unwrap_or_default().to_string(),
+                        state: match n["state"].as_str() {
+                            Some("CLOSED") => IssueState::Closed,
+                            _ => IssueState::Open,
+                        },
+                        comments: issue_comments(&n["comments"]["nodes"]),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    issues.sort_by_key(|i| std::cmp::Reverse(i.number));
+    issues
 }
 
 fn parse_state(s: &str) -> PrState {
@@ -1294,6 +1381,7 @@ mod tests {
             checks: statuses.iter().map(|&s| Check { name: "c".into(), status: s }).collect(),
             comments: Vec::new(),
             truncated: false,
+            issues: Vec::new(),
         };
         assert_eq!(snap(&[]).checks_rollup(), None);
         assert_eq!(
@@ -1445,6 +1533,39 @@ mod tests {
         let history_only =
             Association { open: Vec::new(), history: vec![hist(9, "2026-07-01T00:00:00Z")] };
         assert_eq!(resolve_pick(Path::new("."), &history_only, None).unwrap(), None);
+    }
+
+    #[test]
+    fn linked_issues_sort_newest_number_first_and_read_state() {
+        let nodes = serde_json::json!([
+            {"number": 2381, "title": "older", "url": "u", "body": "b", "state": "CLOSED"},
+            {"number": 7333, "title": "newer", "url": "u", "body": "b", "state": "OPEN"},
+        ]);
+        let issues = normalize_issues(&nodes);
+        assert_eq!(issues.iter().map(|i| i.number).collect::<Vec<_>>(), vec![7333, 2381]);
+        assert_eq!(issues[0].state, IssueState::Open);
+        assert_eq!(issues[1].state, IssueState::Closed);
+    }
+
+    #[test]
+    fn issue_comments_are_newest_first_and_skip_empty_bodies() {
+        let nodes = serde_json::json!([
+            {"author": {"login": "sing"}, "body": "older", "createdAt": "2026-07-01T10:00:00Z"},
+            {"author": {"login": "bot"}, "body": "   ", "createdAt": "2026-07-02T10:00:00Z"},
+            {"author": {"login": "jordan"}, "body": "newer", "createdAt": "2026-07-03T10:00:00Z"},
+        ]);
+        let cs = issue_comments(&nodes);
+        assert_eq!(cs.iter().map(|c| c.body.as_str()).collect::<Vec<_>>(), ["newer", "older"]);
+        // An issue has no reviews, threads, or resolution, so every row is a plain comment.
+        assert!(cs.iter().all(|c| c.kind == CommentKind::Comment));
+        assert!(cs.iter().all(|c| c.snippet.is_none() && !c.is_resolved && c.reply_count == 0));
+    }
+
+    #[test]
+    fn a_pr_with_no_closing_references_links_nothing() {
+        // A body that merely mentions issues is not a link: PR #7555 names four and closes none.
+        assert!(normalize_issues(&serde_json::json!([])).is_empty());
+        assert!(normalize_issues(&serde_json::Value::Null).is_empty());
     }
 
     #[test]

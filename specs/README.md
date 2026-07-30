@@ -38,6 +38,7 @@ Each concern lives in the one doc that owns it. A change is woven into that doc,
 - `search.md` (`SR`) — owns the search overlay: the engine, the query, the results, and where a pick lands.
 - `find-in-file.md` (`FIF`) — owns in-file find: the band, literal matching, match-to-match stepping, and its continuity.
 - `pr-tab.md` (`PRT`) — owns the read-only PR mirror: its header, navigator, read pane, and refetch.
+- `issues-tab.md` (`IT`) — owns the linked-issues list: its admission rule, rows, read pane, and empty states.
 - `herdr-host.md` (`HH`) — owns running as a herdr pane, the export target, and roadmap integration.
 - `forge-host.md` (`FH`) — owns reading the pull request from the repository's forge: resolution, state, checks, comments, and failure states.
 - `forge-providers.md` (`FP`) — owns the per-forge contracts: identity, the CLI and its remedies, and each forge's snapshot mapping.

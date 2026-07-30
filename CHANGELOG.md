@@ -6,6 +6,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- **An `Issues` tab shows the issues the PR closes.** `4` opens it: the navigator lists every
+  linked issue newest-number-first, the read pane renders the selected one's body as markdown,
+  and `o` opens it in the browser. Each issue's comments are listed beneath it and read in the
+  same pane, the way the PR tab lists its own. Only closing references count — an issue the description
+  merely mentions is context, not the work being finished. The issues ride the PR snapshot, so
+  the tab costs no extra fetch. GitHub only for now; GitLab and Azure DevOps show the empty state.
+
+### Changed
+- **The tab strip shortens before a header's last element leaves a narrow bar.** With four tabs a
+  46-column bar could no longer fit the strip, the title and the PR's identity chip together, and
+  a 40-column one pushed the scope chip off the file tabs' header. The strip now gives up
+  characters first, on both headers, and a click follows the label as painted.
+
 ## [0.30.1] — 2026-08-08
 
 ### Fixed

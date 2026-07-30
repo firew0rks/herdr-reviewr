@@ -424,7 +424,7 @@ fn drain_pr_shutdown(
 }
 
 fn schedule_poll_probe(pr: &mut PrCoordinator, tab: crate::app::Tab) {
-    if tab == crate::app::Tab::Pr {
+    if tab.is_forge() {
         pr.probe_pending = true;
     }
 }
@@ -762,7 +762,7 @@ fn event_loop(
             if std::mem::take(&mut app.refresh_commanded) {
                 glyph_since.get_or_insert_with(Instant::now);
             }
-            let glyph_due = if app.tab == crate::app::Tab::Pr {
+            let glyph_due = if app.tab.is_forge() {
                 app.pr_refreshing()
             } else {
                 world_indicator(world_inflight.map(|(started, builds)| (started.elapsed(), builds)))
@@ -927,7 +927,7 @@ fn event_loop(
             // before it can paint, while the generation still coalesces repeated triggers into
             // one fresh fetch. Ambient triggers ride in-flight work and arm a trailing fetch
             // (`request_refresh`).
-            let fallback_poll = app.tab == crate::app::Tab::Pr && last_pr_poll.elapsed() >= PR_POLL;
+            let fallback_poll = app.tab.is_forge() && last_pr_poll.elapsed() >= PR_POLL;
             let refresh =
                 app.pr_pending.take().or(fallback_poll.then_some(crate::app::RefreshKind::Ambient));
             if let Some(kind) = refresh {
@@ -951,7 +951,7 @@ fn event_loop(
                     &mut pr,
                 );
                 if config_gate.pr_unchanged() {
-                    pr.refresh.completed(completion, config_epoch, app.tab == crate::app::Tab::Pr);
+                    pr.refresh.completed(completion, config_epoch, app.tab.is_forge());
                     pr.probe_pending = true;
                 }
                 if config_gate != ConfigGate::Unchanged {
@@ -977,7 +977,7 @@ fn event_loop(
                 let mut repaint = false;
                 if !config_gate.pr_unchanged() || epoch != config_epoch {
                     if config_gate == ConfigGate::Unchanged && epoch != config_epoch {
-                        pr.config_changed(app.tab == crate::app::Tab::Pr);
+                        pr.config_changed(app.tab.is_forge());
                     }
                 } else {
                     repaint = apply_pr_probe_result(app, &mut pr, result, config_epoch);
@@ -1231,13 +1231,13 @@ fn apply_pr_probe_result(
             match pr.refresh.observed(input, config_epoch) {
                 Some(PrEffect::Clear) => {
                     app.clear_pr();
-                    pr.wait_started = (app.tab == crate::app::Tab::Pr).then(Instant::now);
+                    pr.wait_started = (app.tab.is_forge()).then(Instant::now);
                     true
                 }
                 Some(PrEffect::Refetch) => {
                     // The snapshot stays painted; only the refreshing indicator may appear
                     // once the wait crosses the loading delay. Nothing repaints now.
-                    pr.wait_started = (app.tab == crate::app::Tab::Pr).then(Instant::now);
+                    pr.wait_started = (app.tab.is_forge()).then(Instant::now);
                     false
                 }
                 Some(PrEffect::Apply(view)) => {
@@ -1271,7 +1271,7 @@ fn reconcile_plugin_config(
 
     let pr_changed = previous.forge_hosts() != current.forge_hosts();
     if pr_changed {
-        pr.config_changed(app.tab == crate::app::Tab::Pr);
+        pr.config_changed(app.tab.is_forge());
     }
     if previous.theme() != current.theme() {
         // A theme change invalidates highlighted diffs. Rebuild before another input or
@@ -1522,6 +1522,37 @@ pub fn handle_key(app: &mut App, key: KeyEvent, area: Rect, keymap: &Keymap) -> 
     }
 
     // The read-only PR tab: navigate the snapshot and open links; authoring actions are inert.
+    // The read-only issues tab: the same navigation as the PR tab over a flat list, and `o`
+    // opens the selected issue rather than the PR (`specs/issues-tab.md`).
+    if app.tab == crate::app::Tab::Issues {
+        match (action, key.code) {
+            (Some(K::Quit), _) => app.should_quit = true,
+            (Some(K::Refresh), _) => {
+                app.request_pr_refresh(crate::app::RefreshKind::Forced);
+                app.refresh_commanded = true;
+            }
+            (Some(K::TabChanges), _) => app.set_tab(crate::app::Tab::Changes)?,
+            (Some(K::TabAllFiles), _) => app.set_tab(crate::app::Tab::AllFiles)?,
+            (Some(K::TabPr), _) => app.set_tab(crate::app::Tab::Pr)?,
+            (Some(K::OpenPr), _) => app.issues_open(),
+            (Some(K::Search), _) => app.open_search(),
+            (Some(K::NavigatorPosition), _) => app.cycle_navigator_position(),
+            (Some(K::NavigatorGrow), _) => app.resize_navigator(4),
+            (Some(K::NavigatorShrink), _) => app.resize_navigator(-4),
+            (Some(K::Down), _) => app.issues_move(1),
+            (Some(K::Up), _) => app.issues_move(-1),
+            (Some(K::Keys), _) => app.toggle_keys(),
+            (_, Esc) => app.escape(),
+            (_, Tab) => app.toggle_focus(),
+            (_, PageDown) if app.focus == Focus::Files => app.issues_scroll_nav(PAGE),
+            (_, PageUp) if app.focus == Focus::Files => app.issues_scroll_nav(-PAGE),
+            (_, PageDown) => app.issues_scroll_read(PAGE),
+            (_, PageUp) => app.issues_scroll_read(-PAGE),
+            _ => {}
+        }
+        return Ok(());
+    }
+
     if app.tab == crate::app::Tab::Pr {
         match (action, key.code) {
             (Some(K::Quit), _) => app.should_quit = true,
@@ -1531,6 +1562,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent, area: Rect, keymap: &Keymap) -> 
             }
             (Some(K::TabChanges), _) => app.set_tab(crate::app::Tab::Changes)?,
             (Some(K::TabAllFiles), _) => app.set_tab(crate::app::Tab::AllFiles)?,
+            (Some(K::TabIssues), _) => app.set_tab(crate::app::Tab::Issues)?,
             (Some(K::OpenPr), _) => app.pr_open(),
             (Some(K::Search), _) => app.open_search(),
             (Some(K::NavigatorPosition), _) => app.cycle_navigator_position(),
@@ -1578,6 +1610,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent, area: Rect, keymap: &Keymap) -> 
             K::TabChanges => app.set_tab(crate::app::Tab::Changes)?,
             K::TabAllFiles => app.set_tab(crate::app::Tab::AllFiles)?,
             K::TabPr => app.set_tab(crate::app::Tab::Pr)?,
+            K::TabIssues => app.set_tab(crate::app::Tab::Issues)?,
             K::Down => app.move_cursor(1)?,
             K::Up => app.move_cursor(-1)?,
             K::NextHunk => app.next_hunk(),

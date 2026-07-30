@@ -26,17 +26,18 @@ The terminal frame: the pane layout, the tabs, and how the view stays current.
 └────────────────────────────────────────────────────────────────────────────┘
 ```
 
-- The header carries the three tabs with the active one highlighted, the active scope, and the changed-file count with the scope's `+added −removed` totals, right-aligned one cell off the pane edge.
+- The header carries the four tabs with the active one highlighted, the active scope, and the changed-file count with the scope's `+added −removed` totals, right-aligned one cell off the pane edge.
 - The `All files` tab's header label reads `Files`.
 - On the `branch` scope the header names the base after the scope, `vs dev`, the bare branch name however it resolved. Clicking it opens the base picker (`input.md`). With no resolving base it reads `no base`.
 - A skipped pick or `--base` shows after the base, `vs main · dev missing` — and after the empty state too, `no base · dev missing`, so a dormant choice never reads as never-chosen.
 - A base name the header cannot fit truncates with a trailing `…`. The picker always shows it whole. Too narrow for even one column of the name, the base leaves the header rather than paint a nameless `vs`.
+- The tab strip shortens before the scope chip leaves a narrow bar, as it shortens before the PR's identity chip (`pr-tab.md`). Every label loses characters by the same cap, down to a three-column floor, and a click follows the label as painted.
 - The header's line totals drop a zero side and vanish when nothing changed, like a file row's stats (`file-list.md`).
 - The active tab sets both panes: diff and changed files in `Changes`, content and repo tree in `All files`, checks and comments in `PR` (`diff-view.md`, `pr-tab.md`).
 - The comment input opens inline, directly under the last line of the selection, and grows as you type (`input.md`). It is never a footer band.
 - The footer is a live action bar (`input.md`).
 - The comments list, the agent picker, and the base picker open as popups over the body (`input.md`, `herdr-host.md`). While one is open, every painted color in the header and the body recedes halfway to the theme base. The footer stays bright.
-- The review loop is the same in `Changes` and `All files`. `PR` is a read-only mirror. Comments are one set across the authoring tabs and export together.
+- The review loop is the same in `Changes` and `All files`. `PR` is a read-only mirror, and `Issues` is a read-only list of what it closes (`issues-tab.md`). Comments are one set across the authoring tabs and export together.
 
 The navigator has one global position across all tabs, and the position derives the split direction.
 

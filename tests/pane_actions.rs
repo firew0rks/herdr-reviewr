@@ -12,7 +12,8 @@ fn reviewr_bin() -> &'static str {
 /// A fake herdr, answering in the live 0.7.5 envelope shapes (docs/herdr-api-notes.md).
 /// `pane list` serves `panes.json` (else one plain pane), `pane process-info` serves the
 /// per-pane `procinfo-<id>.json` (else a plain shell, which is not a reviewr pane) or fails
-/// with `procfail-<id>.json` on stderr, `pane close` succeeds unless `closefail-<id>`
+/// with `procfail-<id>.json` on stderr, `pane run` re-execs the pane — it writes that pane's
+/// procinfo as the review UI, unless `stall-<id>` exists — and fails when `runfail-<id>` does, `pane close` succeeds unless `closefail-<id>`
 /// exists (whose content becomes the failure's stderr), `plugin config-dir` names the
 /// fixture dir itself (after a 5s hang when `configdir-hang` exists), and everything else
 /// answers as a successful `plugin pane open`.
@@ -34,6 +35,12 @@ fn fake_herdr(dir: &Path) -> (PathBuf, PathBuf) {
                 "    if [ -f \"$dir/procfail-$4.json\" ]; then cat \"$dir/procfail-$4.json\" >&2; exit 1; fi\n",
                 "    if [ -f \"$dir/procinfo-$4.json\" ]; then cat \"$dir/procinfo-$4.json\";\n",
                 "    else printf '%s\\n' '{{\"result\":{{\"process_info\":{{\"foreground_process_group_id\":7,\"foreground_processes\":[{{\"pid\":7,\"name\":\"zsh\",\"argv0\":\"zsh\",\"argv\":[\"-zsh\"],\"cwd\":\"/\"}}],\"pane_id\":\"'\"$4\"'\",\"shell_pid\":1}}}}}}'; fi ;;\n",
+                "  'pane run '*)\n",
+                "    if [ -f \"$dir/runfail-$3\" ]; then exit 1; fi\n",
+                "    if [ ! -f \"$dir/stall-$3\" ]; then\n",
+                "      printf '%s' '{{\"result\":{{\"process_info\":{{\"foreground_process_group_id\":7,\"foreground_processes\":[{{\"pid\":9,\"name\":\"zsh\",\"argv0\":\"herdr-reviewr\",\"argv\":[\"herdr-reviewr\"],\"cwd\":\"/\"}}],\"pane_id\":\"'\"$3\"'\",\"shell_pid\":1}}}}}}' > \"$dir/procinfo-$3.json\"\n",
+                "    fi\n",
+                "    printf '%s\\n' '{{\"result\":{{}}}}' ;;\n",
                 "  'pane close '*)\n",
                 "    if [ -f \"$dir/closefail-$3\" ]; then cat \"$dir/closefail-$3\" >&2; exit 1; fi\n",
                 "    printf '%s\\n' '{{\"result\":{{}}}}' ;;\n",
@@ -552,4 +559,109 @@ fn split_placement_open_renames_no_tab() {
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
     let calls = fs::read_to_string(&log).unwrap();
     assert!(!calls.contains("tab rename"), "{calls}");
+}
+
+// --- Restore (specs/herdr-host.md, Restore) -------------------------------------------------
+
+/// The pane list a herdr restart leaves behind: `w1:p2` and `w2:p1` wear the `reviewr` label
+/// with a shell in them, `w1:p3` came back running the UI, `w1:p1` was never reviewr's.
+fn restarted_session(dir: &Path) {
+    fs::write(
+        dir.join("panes.json"),
+        r#"{"result":{"panes":[{"pane_id":"w1:p1"},{"pane_id":"w1:p2","label":"reviewr"},{"pane_id":"w1:p3","label":"reviewr"},{"pane_id":"w2:p1","label":"reviewr"}]}}"#,
+    )
+    .unwrap();
+    procinfo(
+        dir,
+        "w1:p3",
+        r#"{"pid":8,"name":"herdr-reviewr","argv0":"herdr-reviewr","argv":["/plugin/bin/herdr-reviewr"],"cwd":"/w"}"#,
+    );
+}
+
+#[test]
+fn restore_relaunches_the_panes_a_restart_emptied_and_leaves_the_rest_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    let (herdr, log) = fake_herdr(dir.path());
+    restarted_session(dir.path());
+
+    let output = run("restore", dir.path(), &herdr);
+
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let calls = fs::read_to_string(&log).unwrap();
+    let launch = format!("pane run w1:p2 exec {}", reviewr_bin());
+    assert!(calls.lines().any(|l| l == launch), "{calls}");
+    // Every workspace in the session, not just one: the startup hook has no workspace to read.
+    assert!(calls.contains("pane run w2:p1 exec"), "{calls}");
+    assert!(!calls.contains("pane run w1:p3"), "a live pane must not be relaunched: {calls}");
+    assert!(!calls.contains("pane run w1:p1"), "an unlabeled pane is not reviewr's: {calls}");
+    // The sweep reads the whole session, so it must not ask for one workspace's panes.
+    assert!(calls.lines().any(|l| l == "pane list"), "{calls}");
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("restored w1:p2 w2:p1"),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+}
+
+#[test]
+fn a_second_restore_does_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let (herdr, log) = fake_herdr(dir.path());
+    restarted_session(dir.path());
+
+    assert!(run("restore", dir.path(), &herdr).status.success());
+    fs::write(&log, "").unwrap();
+    let output = run("restore", dir.path(), &herdr);
+
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let calls = fs::read_to_string(&log).unwrap();
+    assert!(!calls.contains("pane run"), "a re-fired hook must relaunch nothing: {calls}");
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("nothing to bring back"),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+}
+
+#[test]
+fn restore_names_a_pane_that_never_came_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let (herdr, _log) = fake_herdr(dir.path());
+    restarted_session(dir.path());
+    // The send lands nowhere: the pane is still a shell when the confirmation window closes.
+    fs::write(dir.path().join("stall-w1:p2"), "").unwrap();
+
+    let output = run("restore", dir.path(), &herdr);
+
+    assert!(!output.status.success());
+    let err = String::from_utf8_lossy(&output.stderr);
+    assert!(err.contains("did not come back: w1:p2"), "{err}");
+    assert!(!err.contains("w2:p1"), "a pane that came back is not named: {err}");
+}
+
+#[test]
+fn restore_leaves_a_pane_with_something_running_in_it_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    let (herdr, log) = fake_herdr(dir.path());
+    fs::write(
+        dir.path().join("panes.json"),
+        r#"{"result":{"panes":[{"pane_id":"w1:p2","label":"reviewr"},{"pane_id":"w1:p4","label":"reviewr"}]}}"#,
+    )
+    .unwrap();
+    // w1:p4 came back as a shell and has since been used: an agent holds the foreground group,
+    // so a re-exec would be typed at the agent, not run (specs/herdr-host.md, Restore).
+    procinfo(
+        dir.path(),
+        "w1:p4",
+        r#"{"pid":7,"name":"claude","argv0":"claude","argv":["claude"],"cwd":"/w"}"#,
+    );
+
+    let output = run("restore", dir.path(), &herdr);
+
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let calls = fs::read_to_string(&log).unwrap();
+    assert!(calls.contains("pane run w1:p2 exec"), "{calls}");
+    assert!(!calls.contains("pane run w1:p4"), "a busy pane must be left alone: {calls}");
+    let out = String::from_utf8_lossy(&output.stdout);
+    assert!(out.contains("left running: w1:p4"), "{out}");
 }

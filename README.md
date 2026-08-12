@@ -55,6 +55,10 @@ herdr plugin action invoke open --plugin persiyanov.reviewr
 reviewr auto-opens in new worktrees. `auto_open = false` keeps it hidden until you ask
 ([Configuration](#configuration)).
 
+Panes come back on their own after a herdr restart: herdr restores the pane but spawns a shell in
+it, so reviewr re-execs itself in every pane it owned at startup. To sweep by hand,
+`herdr plugin action invoke restore --plugin persiyanov.reviewr`.
+
 **To update**, reinstall. Your config is keyed by plugin id and survives:
 
 ```bash

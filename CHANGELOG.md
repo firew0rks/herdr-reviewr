@@ -7,6 +7,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **Panes come back after a herdr restart.** A restart used to leave every reviewr pane as a bare
+  shell: herdr restores the pane, its label and its place, but spawns your shell in it and never
+  replays the launch. A startup hook now re-execs the review UI in each of those panes, in place,
+  so they keep their id, layout share, cwd and scrollback. Idempotent, and bound to a `restore`
+  action for a sweep by hand.
 - **An `Issues` tab shows the issues the PR closes.** `4` opens it: the navigator lists every
   linked issue newest-number-first, the read pane renders the selected one's body as markdown,
   and `o` opens it in the browser. Each issue's comments are listed beneath it and read in the

@@ -5,10 +5,11 @@
 #   pane.sh open        open a reviewr pane, no-op if one is open
 #   pane.sh close       close every reviewr pane, no-op if none
 #   pane.sh auto-open   worktree.created hook: open, gated by auto_open and placement
+#   pane.sh restore     startup hook: relaunch the UI in the panes a herdr restart emptied
 #
 # A reviewr pane is any pane running the review UI in its foreground process group, read
 # live per pane (specs/herdr-host.md, Pane identity). The `reviewr` label is display only
-# and never read. There is no state file. Actions refuse loudly (exit 1, one stderr line)
+# and read nowhere but `restore`, where the process it named is already gone. There is no state file. Actions refuse loudly (exit 1, one stderr line)
 # and report successes on stdout; a refused event reports its config error through stderr
 # for herdr's plugin log.
 set -uo pipefail
@@ -94,13 +95,18 @@ if [ "$mode" = auto-open ] && [ -n "${HERDR_PLUGIN_EVENT_JSON:-}" ]; then
   pane=""
 fi
 
-[ -n "$ws" ] || refuse "no workspace context (invoke from inside herdr)"
+# `restore` runs from the startup hook, which has no workspace: it sweeps the whole session,
+# every workspace herdr just brought back.
+scope="in $ws"
+[ "$mode" != restore ] || { ws=""; scope="in this session"; }
+[ -n "$ws" ] || [ "$mode" = restore ] || refuse "no workspace context (invoke from inside herdr)"
 
 # One pane-list snapshot serves the whole run. A failed or unreadable listing must not read
 # as "no reviewr pane" — that would stack a duplicate on toggle and false-succeed a close.
-panes_json=$("$H" pane list --workspace "$ws" 2>/dev/null) && [ -n "$panes_json" ] &&
+if [ -n "$ws" ]; then set -- --workspace "$ws"; else set --; fi
+panes_json=$("$H" pane list "$@" 2>/dev/null) && [ -n "$panes_json" ] &&
   printf '%s' "$panes_json" | jq -e '.result.panes' >/dev/null 2>&1 ||
-  refuse "herdr pane list failed for $ws"
+  refuse "herdr pane list failed $scope"
 
 # A reviewr pane runs the review UI in its foreground process group (specs/herdr-host.md,
 # Pane identity). A wrapped launch (`cargo run`) counts through its child; a flag run
@@ -113,6 +119,28 @@ panes_json=$("$H" pane list --workspace "$ws" 2>/dev/null) && [ -n "$panes_json"
 # Returns 1 for a pane that is not the review UI — a pane the read reports gone exited
 # between the list and this read and converges like any observed-then-exited pane — and 2
 # for a read that fails any other way, which the caller refuses like a failed pane list.
+# Whether a pane is idle: its foreground process is a shell, so nothing is running in it. A
+# re-exec is typed at whatever holds the pane, so restore leaves a pane with an agent or a
+# build in it alone (specs/herdr-host.md, Restore). Read by name rather than by comparing the
+# foreground group against `shell_pid`: a shell sourcing its rc briefly holds a group of its
+# own, which is exactly when restore fires (measured). A login shell wears a leading `-`.
+# Returns 1 for a busy pane and 2 for a read that fails, like `is_reviewr_pane`.
+is_idle_shell() {
+  if ! info=$("$H" pane process-info --pane "$1" 2>"$2"); then
+    case "$(cat "$2" 2>/dev/null)" in
+    *pane_not_found*) return 1 ;;
+    *) return 2 ;;
+    esac
+  fi
+  others=$(printf '%s' "$info" | jq -r '
+    def base: split("/") | last | sub("^-"; "");
+    ["sh", "bash", "zsh", "fish", "dash", "ksh", "mksh", "csh", "tcsh", "nu", "elvish", "xonsh"] as $shells
+    | [.result.process_info.foreground_processes[]
+        | select((((.argv0 // (.argv // [])[0] // "") | base) | IN($shells[])) | not)]
+    | length' 2>/dev/null) || return 2
+  [ "$others" -eq 0 ] 2>/dev/null
+}
+
 is_reviewr_pane() {
   if ! info=$("$H" pane process-info --pane "$1" 2>"$2"); then
     case "$(cat "$2" 2>/dev/null)" in
@@ -174,7 +202,7 @@ while IFS= read -r p; do
 done <<EOF
 $pane_list
 EOF
-[ "$unreadable" -eq 0 ] || refuse "herdr pane process-info failed in $ws"
+[ "$unreadable" -eq 0 ] || refuse "herdr pane process-info failed $scope"
 
 # Plain `pane close`, not `plugin pane close`: the live process read reaches a pane the
 # plugin-pane registry forgot after a herdr restart, and a layout-launched pane was never
@@ -203,7 +231,64 @@ EOF
   printf 'closed%s in %s\n' "$closed" "$ws"
 }
 
+# herdr restores a pane's place, cwd and label after a restart, then spawns the user's shell
+# in it: the plugin-pane registry is gone and the pane's launch command is never replayed
+# (specs/herdr-host.md, Restore). The label is the only surviving evidence that a pane was
+# reviewr's, so restore is the one reader of it. `pane run` re-execs the shell in place, so
+# the pane keeps its id, its layout share, its cwd and its scrollback.
+#
+# A pane already running the UI is skipped, which makes a re-fired hook a no-op. Each relaunch
+# is sent once and then confirmed by reading the pane back: a second send would land as
+# keystrokes in a UI that started late, which is worse than reporting the pane that stalled.
+restore_all() {
+  launch="$REVIEWR"
+  case "$launch" in
+  /*) ;;
+  *) launch=$(command -v "$REVIEWR" 2>/dev/null) || refuse "cannot resolve $REVIEWR to relaunch" ;;
+  esac
+
+  sent=""
+  failed=""
+  labelled=$(printf '%s' "$panes_json" |
+    jq -r '.result.panes[] | select(.label == "reviewr") | .pane_id' 2>/dev/null) ||
+    refuse "herdr pane list is unreadable"
+  busy=""
+  for p in $labelled; do
+    printf '%s' "$existing" | grep -qxF "$p" && continue
+    if ! is_idle_shell "$p" "$probe_dir/restore.err"; then
+      busy="$busy $p"
+      continue
+    fi
+    if "$H" pane run "$p" exec "$launch" >/dev/null 2>&1; then
+      sent="$sent $p"
+    else
+      failed="$failed $p"
+    fi
+  done
+  [ -z "$busy" ] || printf 'restore: left running:%s\n' "$busy"
+  [ -n "$sent$failed" ] || { printf 'restore: nothing to bring back\n'; return 0; }
+
+  # The UI paints its first frame well inside this. A pane still a shell at the end never
+  # got the send, and it is named rather than counted as restored.
+  pending="$sent"
+  for _ in 1 2 3 4 5 6; do
+    [ -n "$pending" ] || break
+    sleep 0.5
+    still=""
+    for p in $pending; do
+      is_reviewr_pane "$p" "$probe_dir/restore.err" || still="$still $p"
+    done
+    pending="$still"
+  done
+  [ -z "$pending$failed" ] || refuse "did not come back:$pending$failed"
+  printf 'restored%s\n' "$sent"
+}
+
 case "$mode" in
+restore)
+  restore_all
+  exit 0
+  ;;
 close)
   [ -n "$existing" ] || { printf 'close: nothing open in %s\n' "$ws"; exit 0; }
   close_all
@@ -222,7 +307,7 @@ open | auto-open)
   fi
   ;;
 *)
-  refuse "unknown mode '$mode' (toggle | open | close | auto-open)"
+  refuse "unknown mode '$mode' (toggle | open | close | auto-open | restore)"
   ;;
 esac
 

@@ -23,6 +23,19 @@ title = "reviewr"
 placement = "split"
 command = ["sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/bin/herdr-reviewr\""]
 
+# A herdr restart hands every reviewr pane back as a plain shell: the pane, its label and its
+# place survive, the process does not (specs/herdr-host.md, Restore). This one-shot hook
+# re-execs the UI in each of them at startup. Idempotent — a pane already running the UI is
+# skipped — so a re-fire during a live handoff does nothing.
+[[startup]]
+command = ["bash", "herdr/pane.sh", "restore"]
+
+[[actions]]
+id = "restore"
+title = "reviewr: bring back the panes a restart emptied"
+contexts = ["pane", "workspace"]
+command = ["bash", "herdr/pane.sh", "restore"]
+
 [[actions]]
 id = "toggle"
 title = "reviewr: toggle pane"

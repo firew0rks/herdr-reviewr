@@ -1,7 +1,7 @@
 ---
 Status: Current
 Created: 2026-06-23
-Last edited: 2026-07-31
+Last edited: 2026-08-12
 ---
 
 # herdr host
@@ -21,12 +21,25 @@ The binary paints its empty frame before the first git scan, so the pane never s
 | `HH-PLACEMENT-CONFIGURED` | Every action or event open uses the placement named by `toggle_placement`. |
 | `HH-TURN-PER-WORKTREE`    | A turn belongs to the worktree, never to one agent.                        |
 | `HH-LAUNCHER-BLIND`       | A reviewr pane behaves the same however it was created.                    |
+| `HH-RESTART-WHOLE`        | A herdr restart leaves every reviewr pane running the review UI.           |
 
 ## Pane identity
 
 A reviewr pane is any pane running the review UI in its foreground process group, read live from herdr at each action and event. A wrapped launch like `cargo run` counts through its child. A flag run like `--resolve-plugin-config` is not the review UI and never counts.
 
-The review run labels its pane `reviewr` when the pane has no label, and a normal exit clears only a `reviewr` label, so a name the user gave the pane survives both ends. The label is display only: a failed write or a stale label changes nothing an action or the event reads.
+The review run labels its pane `reviewr` when the pane has no label, and a normal exit clears only a `reviewr` label, so a name the user gave the pane survives both ends. The label is display only: a failed write or a stale label changes nothing an action or the event reads, with the single exception of restore below, where the process the label named no longer exists.
+
+## Restore
+
+A herdr restart hands the pane back without its process. The pane, its label, its cwd and its place in the layout are restored from the host's session snapshot; the plugin-pane registry is not, and the pane's recorded launch command is not replayed — the host spawns the user's shell in it instead. Measured on herdr 0.7.5.
+
+The plugin's `startup` hook closes that gap. It runs once per host start, after the session is restored, and for every pane in the session labelled `reviewr` that is not already running the review UI it re-execs the binary in place, through `herdr pane run`. The pane keeps its id, its layout share, its cwd and its scrollback; only the shell is replaced. The same sweep is bound to the `restore` action, so a user can run it by hand.
+
+The label is the only surviving evidence that a pane was reviewr's, which is why restore reads it and nothing else does (→ HH-RESTART-WHOLE).
+
+A pane with something running in it — an agent, a build — is left alone and named, because a re-exec is typed at whatever holds the pane rather than run. A pane counts as idle when its foreground process is a shell.
+
+Restore is idempotent: a pane already running the UI is skipped, so a re-fire — the host re-runs startup hooks on a live handoff — does nothing. Each relaunch is sent once and then confirmed by reading the pane back, because a second send would land as keystrokes in a UI that started late. A pane still a shell when the confirmation window closes is named in the refusal rather than counted as restored (Failure semantics).
 
 ## Install paths
 
@@ -36,11 +49,12 @@ The plugin keeps the binary linked at a stable path, `~/.local/state/herdr/plugi
 
 Actions bind to keys and to script invocations alike.
 
-| action   | pane absent  | pane present    |
-| -------- | ------------ | --------------- |
-| `open`   | opens one    | does nothing    |
-| `close`  | does nothing | closes them all |
-| `toggle` | opens one    | closes them all |
+| action    | pane absent  | pane present                        |
+| --------- | ------------ | ----------------------------------- |
+| `open`    | opens one    | does nothing                        |
+| `close`   | does nothing | closes them all                     |
+| `toggle`  | opens one    | closes them all                     |
+| `restore` | does nothing | relaunches the ones herdr emptied   |
 
 With valid plugin config:
 
@@ -52,6 +66,8 @@ With valid plugin config:
 | on refusal, on success? | exit 1 with one stderr line, exit 0 with one stdout line naming the panes |
 | what counts as open?    | any reviewr pane in the workspace (Pane identity)                         |
 | which workspace?        | the focused one, wherever the action is invoked from                      |
+
+`restore` is the exception to the last row: it has no workspace context to read, and sweeps every workspace in the session (Restore).
 
 Every action validates plugin config before inspecting the workspace (`config.md`). An action refuses without workspace context, and an open refuses outside a git repository. Both land in `herdr plugin log list`.
 

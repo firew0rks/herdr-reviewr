@@ -29,7 +29,7 @@ Every field is required.
 
 ### Scopes
 
-A scope selects which changes `Changes` shows and which files `All files` annotates. The two tabs share one active scope. A reviewr pane starts in the config's `default_scope`, `uncommitted` when unset (`config.md`). A config reread never switches the active scope.
+A scope selects which changes `Changes` shows. A reviewr pane starts in the config's `default_scope`, `uncommitted` when unset (`config.md`). A config reread never switches the active scope.
 
 | scope         | shows                                                         |
 | ------------- | ------------------------------------------------------------- |
@@ -69,7 +69,7 @@ The installed pane passes no arguments, so `--base` serves standalone and dev ru
 
 ### Ignored paths
 
-Every scope respects `.gitignore`. To review an ignored file, track it. This gates `Changes` only: `All files` lists every file, ignored dimmed (`file-list.md`).
+Every scope respects `.gitignore`. To review an ignored file, track it.
 
 ### Turn baseline
 
@@ -98,12 +98,6 @@ A row in the `Changes` list carries:
 
 The selected file's structured diff, built from its old and new content (`diff-view.md`). Comment anchors and snippets come from it. An untracked file diffs against empty old content. A binary file lists, and its pane reads `binary — no line comments`.
 
-### File content
-
-In `All files` a comment anchors to plain file content instead of a diff. Its `side` is `new`, its range is line numbers in the current file, and its snippet lines are space-prefixed like context lines. It exports identically to a diff comment.
-
-A comment renders and is acted on only in the view it belongs to: a content comment in `All files`, a diff comment in `Changes`. Send, Copy, and the comments list carry the whole set across both tabs.
-
 ## Behavior
 
 Comments are a review pass, not a durable record.
@@ -113,7 +107,6 @@ Comments are a review pass, not a durable record.
 - Editing changes the text in place.
 - Export takes the whole set and clears it.
 - A comment whose file leaves the changeset is flagged stale, and kept.
-- An `All files` comment is flagged stale only when its file is deleted from the worktree.
 
 ### Export
 

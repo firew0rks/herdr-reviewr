@@ -21,7 +21,7 @@ keyword is context the reader can already see in the description; an issue the P
 work being finished, and only that set answers "was this what we asked for".
 
 ```
- 1 Changes  2 Files  3 PR  4 Issues    Care-team knowledge-base gap…  fix/6440  open #7080 ↗
+ 1 Changes  2 PR  3 Issues    Care-team knowledge-base gap…  fix/6440  open #7080 ↗
 ╭─ #6440 Agent confabulates an Invite button ─────────╮╭─ Linked issues ──────────────╮
 │ A village-worker asked how to add someone to the    ││▍#6440 Agent confabulates… open│
 │ care team. The agent described an Invite button     ││   @JordanIndi            2d  │

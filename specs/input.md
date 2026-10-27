@@ -35,7 +35,7 @@ The keymap is rebindable per action through `[keybindings]` in the plugin config
 | —                                                        | scroll the diff horizontally (wrap off)     | `←` / `→`                                   | —                             |
 | `scope-uncommitted` / `scope-branch` / `scope-last-turn` | switch scope                                | `u` / `b` / `t`                             | click the scope chip to cycle |
 | `base-pick`                                              | open the base picker                        | `B`                                         | click the base name           |
-| `tab-changes` / `tab-all-files` / `tab-pr` / `tab-issues` | switch tab                                  | `1` / `2` / `3` / `4`                       | click a tab name              |
+| `tab-changes` / `tab-pr` / `tab-issues`                  | switch tab                                  | `1` / `2` / `3`                             | click a tab name              |
 | —                                                        | expand the fold under the cursor            | `→`                                         | click the `⋯` row             |
 | —                                                        | open a link in rendered markdown            | —                                           | click the link                |
 | `wrap`                                                   | toggle line wrap                            | `w`                                         | —                             |
@@ -50,7 +50,6 @@ The keymap is rebindable per action through `[keybindings]` in the plugin config
 | `delete`                                                 | delete the comment under the cursor         | `d`                                         | —                             |
 | `next-comment` / `prev-comment`                          | jump to next / previous comment             | `n` / `N`                                   | —                             |
 | `comments`                                               | list and manage all comments                | `l`                                         | —                             |
-| `search`                                                 | open the search screen (`search.md`)        | `/`                                         | —                             |
 | `find`                                                   | open in-file find (`find-in-file.md`)       | `ctrl+f`                                    | —                             |
 | `keys`                                                   | toggle the footer's full shortcut list      | `?`                                         | —                             |
 | `send`                                                   | send all comments to the agent              | `s` / `S`                                   | —                             |
@@ -63,7 +62,7 @@ The keymap is rebindable per action through `[keybindings]` in the plugin config
 
 `navigator-grow` and `navigator-shrink` change the active share by four percentage points. The allowed range clamps every change.
 
-`navigator-hide` hides the navigator and shows it again in place (`tui.md`). On the file tabs it is never inert in `Normal` mode, so the way back is always the key that hid it. On `PR` it is inert and stays out of the footer (`tui.md`). While the navigator is hidden, `navigator-position`, `navigator-grow`, and `navigator-shrink` are inert. In `Normal` mode, `tab` then shows the navigator and focuses it. Every other mode keeps its own `tab` meaning (`search.md`).
+`navigator-hide` hides the navigator and shows it again in place (`tui.md`). On `Changes` it is never inert in `Normal` mode, so the way back is always the key that hid it. On `PR` it is inert and stays out of the footer (`tui.md`). While the navigator is hidden, `navigator-position`, `navigator-grow`, and `navigator-shrink` are inert. In `Normal` mode, `tab` then shows the navigator and focuses it. Every other mode keeps its own `tab` meaning.
 
 Outside the hidden-state rules above, these four navigator actions work from either main pane on every tab. While the comment editor is open, their printable characters are text. In the comments list, the agent picker, and the base picker they are inert. Those local modes omit the navigator actions from the footer.
 
@@ -83,7 +82,7 @@ Writing a comment: select a range or land on a line, press `c`, type into the in
 - Any other input drops the arm and still does its own work. A background poll keeps it, unless it changes the open file.
 - A crossing arms only when a file to cross to exists. At the changeset's ends nothing is offered and nothing moves.
 - A file with no changed rows is crossed over, notice diffs (`binary`, `too_large`) included.
-- The steps are inert in `All files` and in the markdown preview, which paint no changed rows.
+- The steps are inert in the markdown preview, which paints no changed rows.
 
 `next-file` / `prev-file` skip a file per press, from either pane, and never arm:
 
@@ -116,7 +115,7 @@ right of the `do` row.
 
 ```
  do    e edit · d delete · n/N jump · s send 2                                ?
- go    u/b/t scope · / search · ctrl+f find · w wrap · l list · y copy · r refresh · 1·2·3 tabs
+ go    u/b/t scope · ctrl+f find · w wrap · l list · y copy · r refresh · 1·2·3 tabs
        tab files · p position · z hide · q quit
  move  j k · ] [ hunk · f F file · PageUp PageDown
 ```
@@ -144,7 +143,7 @@ The `?` expansion:
 
 - It lists every shortcut applicable in the current context that is not already on row 1, wrapped
   below row 1 in three labeled bands, each a dim label then its keys. `do`: the cursor's actions.
-  `go`: the global actions, each shown only where it works — scope, the base picker, search, find,
+  `go`: the global actions, each shown only where it works — scope, the base picker, find,
   wrap, the comments list, copy, refresh, the tabs, the pane toggle, the navigator position and hide
   keys, quit. `move`:
   down and up, the hunk and file steps, the page keys. An empty band is dropped, and a key that would
@@ -182,16 +181,16 @@ Row 1's primary and actions follow the cursor:
 - An armed crossing outranks the cursor's own action and leads row 1, since only the footer says the next press leaves the file. It is the one movement key on row 1 (see Changeset traversal). While it is armed, the `move` band drops the hunk step, whose key row 1 now shows.
 - While the navigator is hidden, `z show` joins row 1's actions, so the collapsed footer always names the way back. Visible, `z hide` joins them only while the file list holds focus, whose row 1 has the room. Elsewhere it waits in the `go` band.
 - When the awaiting-turn state and the hidden empty read pane match at once, the awaiting-turn row wins, and `z show` still joins its actions.
-- `scope`, `search`, and `find` are global, not cursor actions, so the `go` band carries them, never row 1 — `search` in every context, `find` wherever the read pane has content (`search.md`, `find-in-file.md`). `scope` leads row 1 only where nothing else does, an empty or notice diff.
+- `scope` and `find` are global, not cursor actions, so the `go` band carries them, never row 1 — `find` wherever the read pane has content (`find-in-file.md`). `scope` leads row 1 only where nothing else does, an empty or notice diff.
 - Movement keys never sit on row 1. The `move` band shows them.
-- The comment editor, the comments list, the agent picker, the base picker, the search screen, and the find band show their own one-row footer, without `?`. The expansion's open state is kept and restored when they close.
-- `?` (the `keys` action) toggles the expansion in `Normal` mode only. It is text in the comment editor, the search and find inputs, and the base picker's filter, and inert in the comments list and the agent picker.
+- The comment editor, the comments list, the agent picker, the base picker, and the find band show their own one-row footer, without `?`. The expansion's open state is kept and restored when they close.
+- `?` (the `keys` action) toggles the expansion in `Normal` mode only. It is text in the comment editor, the find input, and the base picker's filter, and inert in the comments list and the agent picker.
 - The changed-file count and line totals live in the header. The footer carries only the comment count, inside `s send N`.
 - On `PR` row 1 carries the PR state line and `o open ↗` per `pr-tab.md`, and `?` expands to the rest.
 
 ### Comment editor
 
-A plain-text field that edits at the caret, not only at the end. The search input and the base picker's filter share these controls, without the newline inserts (`search.md`). An empty box shows a dim `Leave a comment…` placeholder. `e` preloads the existing text with the caret at the end.
+A plain-text field that edits at the caret, not only at the end. The find input and the base picker's filter share these controls, without the newline inserts. An empty box shows a dim `Leave a comment…` placeholder. `e` preloads the existing text with the caret at the end.
 
 ```
 ┌ comment · llm_registry.py:41 ───────────┐
@@ -213,7 +212,7 @@ A plain-text field that edits at the caret, not only at the end. The search inpu
 | `Enter` / `Esc`                                 | save / cancel, cancel discards the draft         |
 
 - A paste arrives whole via bracketed paste. A multi-line paste keeps its newlines. `\r\n` and `\r` normalize to `\n`.
-- A paste outside the comment editor and the search input is ignored. It never starts or mutates a comment.
+- A paste outside the comment editor, the find input, and the base picker's filter is ignored. It never starts or mutates a comment.
 - Movement, insertion, and deletion are character-wise. Multi-byte and wide characters count as whole characters.
 - `↑`/`↓` move by wrapped rows. `Home`/`End` and the kill keys act on the logical line, the run of text between explicit newlines.
 - `Alt+b`/`Alt+f` always survive as ESC-prefixed sequences. The modified arrows work where the terminal delivers them. The character arrows, `Home`/`End`, and `Ctrl+A`/`Ctrl+E` always work.
@@ -239,7 +238,7 @@ Only the unmodified `enter` sends. `Alt+Enter` and `Shift+Enter` insert a newlin
 
 ### Base picker
 
-`base-pick` opens the picker over the body, like the comments list (`tui.md`). It works on the file tabs while the `branch` scope is active and no `--base` flag was passed. Elsewhere it is inert and stays out of the footer. While the comment editor is open, the base-name click is inert like the key.
+`base-pick` opens the picker over the body, like the comments list (`tui.md`). It works on `Changes` while the `branch` scope is active and no `--base` flag was passed. Elsewhere it is inert and stays out of the footer. While the comment editor is open, the base-name click is inert like the key.
 
 The list holds one row per branch name, remote-tracking and local names merged. The checked-out branch is not listed, unless it is the default branch, whose row must stay reachable to clear a pick. Rows sort by most recent commit. Two rows outrank that order:
 
@@ -277,5 +276,4 @@ The filter is a text field with the comment editor's controls, above. `↑` and 
 - [diff-view](./diff-view.md)
 - [review-model](./review-model.md)
 - [pr-tab](./pr-tab.md)
-- [search](./search.md)
 - [find-in-file](./find-in-file.md)

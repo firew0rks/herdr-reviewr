@@ -92,9 +92,6 @@ pub struct Comment {
     /// Verbatim diff lines the comment anchors to, each keeping its `+`/`-`/space marker.
     pub lines: String,
     pub text: String,
-    /// True when anchored to a diff (the `Changes` tab); false for a File-view content comment
-    /// (the `All files` tab). Selects how staleness is judged (specs/review-model.md).
-    pub diff_anchored: bool,
 }
 
 impl Comment {
@@ -178,7 +175,6 @@ mod tests {
             end,
             lines: "+x".into(),
             text: text.into(),
-            diff_anchored: true,
         }
     }
 

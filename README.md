@@ -19,8 +19,6 @@ One persistent pane, pointed at a git worktree:
 - **Diff review** — the agent's changed files, syntax-highlighted.
 - **Last-turn diff** — what the worktree's latest turn changed, on its own.
 - **Line comments** — select a range, write a note. One keystroke sends every note to the agent.
-- **File viewer** — any file's current content from the whole worktree.
-- **Search** — fuzzy file names and live code grep across the worktree, powered by [fff](https://github.com/dmtrKovalenko/fff).
 - **Find in file** — search the open file and step between every match.
 - **PR view** — the branch's pull request in the pane, read-only.
 - **Markdown preview** — flip a `.md` file between source and rendered view.
@@ -28,7 +26,8 @@ One persistent pane, pointed at a git worktree:
 
 It never edits your worktree and sends nothing on its own. Its only git writes are private
 refs under `refs/reviewr/`: the turn baseline and the base pick. The **PR** tab reads GitHub,
-GitLab, or Azure DevOps and never posts.
+GitLab, or Azure DevOps and never posts. Inside a herdr with a forge pool, GitHub reads go
+through `herdr forge gh` and refresh on its `forge.updated` event, so panes share one poller.
 
 ## Requirements
 
@@ -108,7 +107,7 @@ The keys below are defaults. You can rebind every action, even to several keys a
 
 | Key | Action |
 | --- | --- |
-| `1` `2` `3` | Switch tab — Changes / All files / PR |
+| `1` `2` `3` | Switch tab — Changes / PR / Issues |
 | `u` `b` `t` | Switch scope — uncommitted / branch / last turn |
 | `B` | Pick the branch scope's base |
 | `j` `k` · `↑` `↓` | Move cursor |
@@ -118,7 +117,6 @@ The keys below are defaults. You can rebind every action, even to several keys a
 | `Ctrl+U` `Ctrl+D` | Move a half-page |
 | `Tab` | Switch focus |
 | `→` `←` | Expand / collapse, or scroll sideways |
-| `/` | Search files and code |
 | `Ctrl+F` | Find in file |
 | `w` | Toggle line wrap |
 | `m` | Preview markdown file |
@@ -168,13 +166,11 @@ opens in your browser (`http`/`https` only), and an anchor link jumps to its hea
 ## The three tabs
 
 - **Changes** — the active scope's changed files with `+/-` stats and totals in the header.
-- **All files** — any file's current content from the whole worktree, comments too. Ignored paths
-  show dimmed, and a wholly-ignored directory (`target/`, `node_modules/`) stays one collapsed row
-  until you expand it.
 - **PR** — a read-only mirror of the branch's pull request (GitHub, Azure DevOps) or merge request
   (GitLab): state (draft, open, merged, or closed, plus mergeability and sync), checks with a
   pass/fail rollup, the description, and every comment newest first with `resolved` and `outdated`
   markers. Bodies render as markdown. reviewr never posts, resolves, re-runs, or merges.
+- **Issues** — the issues the pull request closes, each with its thread, read-only.
 
 ## Diff scopes
 
@@ -189,7 +185,7 @@ reviewr starts in **uncommitted**. `default_scope` changes that. Switching with 
 wins for the rest of the session.
 
 Every scope respects `.gitignore`, so build output never clutters **Changes**. To review a file,
-track it. **All files** still browses any ignored path.
+track it.
 
 ## Configuration
 
@@ -305,7 +301,7 @@ The action names and their defaults:
 | `next-file` / `prev-file` | `f` / `F` |
 | `scope-uncommitted` / `scope-branch` / `scope-last-turn` | `u` / `b` / `t` |
 | `base-pick` | `B` |
-| `tab-changes` / `tab-all-files` / `tab-pr` | `1` / `2` / `3` |
+| `tab-changes` / `tab-pr` / `tab-issues` | `1` / `2` / `3` |
 | `wrap` | `w` |
 | `preview` | `m` |
 | `navigator-position` | `p` |
@@ -316,7 +312,6 @@ The action names and their defaults:
 | `edit` / `delete` | `e` / `d` |
 | `next-comment` / `prev-comment` | `n` / `N` |
 | `comments` | `l` |
-| `search` | `/` |
 | `find` | `ctrl+f` |
 | `keys` | `?` |
 | `send` | `s`, `S` |

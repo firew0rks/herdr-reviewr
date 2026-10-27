@@ -24,8 +24,8 @@ Three tabs:
 | tab         | shows                                                                  |
 | ----------- | ---------------------------------------------------------------------- |
 | `Changes`   | the active scope's changed files, with a syntax-highlighted diff viewer |
-| `All files` | the whole repo tree, with a read-and-comment content viewer             |
 | `PR`        | a read-only mirror of the pull request: state, checks, comments         |
+| `Issues`    | the issues the pull request closes, with their threads (`issues-tab.md`) |
 
 ## Voice
 
@@ -41,14 +41,12 @@ to move the work forward.
 ## Scope
 
 - The `Changes` view: a changed-files list per scope plus the diff viewer (`diff-view.md`).
-- The `All files` tab: a repo tree and content viewer, annotated with the active scope's changes (`file-list.md`, `diff-view.md`).
 - The `PR` tab: pull-request identity, state, checks, and comments, read from the repository's forge, with external links only (`forge-host.md`, `pr-tab.md`).
 - Three scopes: `uncommitted`, `branch`, `last-turn` (`review-model.md`).
 - Comments anchored to `path:start-end`, held in memory for the review pass.
 - Export of all comments to the agent input or the clipboard.
 - Poll-based refresh plus a manual refresh key.
 - Keyboard and mouse input (`input.md`).
-- Full-screen search over the worktree: fuzzy file names and literal code with a live preview, ranking owned by the engine (`search.md`).
 - In-file find in the read pane: literal match highlighting and match-to-match stepping (`find-in-file.md`).
 
 ## Roadmap
@@ -56,7 +54,6 @@ to move the work forward.
 Named so the architecture stays open to them. None is part of this design.
 
 - Reviewed-file state: marking a file reviewed and greying it in the list.
-- Hopping between the agent's changed files while browsing `All files`.
 - A side-by-side split diff view for wide panes.
 - Search on `Changes`, scoped to the changeset.
 - Live theme switching.
@@ -100,7 +97,6 @@ Newer content paints over the old in place, reconciling the reviewer's place as 
 - [theme](./theme.md)
 - [file-list](./file-list.md)
 - [input](./input.md)
-- [search](./search.md)
 - [find-in-file](./find-in-file.md)
 - [tui](./tui.md)
 - [pr-tab](./pr-tab.md)

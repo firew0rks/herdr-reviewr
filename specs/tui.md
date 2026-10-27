@@ -11,7 +11,7 @@ The terminal frame: the pane layout, the tabs, and how the view stays current.
 ## Overview
 
 ```
-┌ 1 Changes  2 Files  3 PR  [uncommitted]                    9 changed  +42 −18 ┐
+┌ 1 Changes  2 PR  3 Issues  [uncommitted]                   9 changed  +42 −18 ┐
 │ ⋯  11 unmodified lines                       │ M llm_registry.py  +18 -8  │
 │ 40    def resolve(self, name):               │ M deep_research.py +155-62 │
 │ 41 ▌  from .z import w                         │ D old_runner.py    -47     │
@@ -26,18 +26,17 @@ The terminal frame: the pane layout, the tabs, and how the view stays current.
 └────────────────────────────────────────────────────────────────────────────┘
 ```
 
-- The header carries the four tabs with the active one highlighted, the active scope, and the changed-file count with the scope's `+added −removed` totals, right-aligned one cell off the pane edge.
-- The `All files` tab's header label reads `Files`.
+- The header carries the three tabs with the active one highlighted, the active scope, and the changed-file count with the scope's `+added −removed` totals, right-aligned one cell off the pane edge.
 - On the `branch` scope the header names the base after the scope, `vs dev`, the bare branch name however it resolved. Clicking it opens the base picker (`input.md`). With no resolving base it reads `no base`.
 - A skipped pick or `--base` shows after the base, `vs main · dev missing` — and after the empty state too, `no base · dev missing`, so a dormant choice never reads as never-chosen.
 - A base name the header cannot fit truncates with a trailing `…`. The picker always shows it whole. Too narrow for even one column of the name, the base leaves the header rather than paint a nameless `vs`.
 - The tab strip shortens before the scope chip leaves a narrow bar, as it shortens before the PR's identity chip (`pr-tab.md`). Every label loses characters by the same cap, down to a three-column floor, and a click follows the label as painted.
 - The header's line totals drop a zero side and vanish when nothing changed, like a file row's stats (`file-list.md`).
-- The active tab sets both panes: diff and changed files in `Changes`, content and repo tree in `All files`, checks and comments in `PR` (`diff-view.md`, `pr-tab.md`).
+- The active tab sets both panes: diff and changed files in `Changes`, checks and comments in `PR` (`diff-view.md`, `pr-tab.md`).
 - The comment input opens inline, directly under the last line of the selection, and grows as you type (`input.md`). It is never a footer band.
 - The footer is a live action bar (`input.md`).
 - The comments list, the agent picker, and the base picker open as popups over the body (`input.md`, `herdr-host.md`). While one is open, every painted color in the header and the body recedes halfway to the theme base. The footer stays bright.
-- The review loop is the same in `Changes` and `All files`. `PR` is a read-only mirror, and `Issues` is a read-only list of what it closes (`issues-tab.md`). Comments are one set across the authoring tabs and export together.
+- The review loop lives in `Changes`. `PR` is a read-only mirror, and `Issues` is a read-only list of what it closes (`issues-tab.md`).
 
 The navigator has one global position across all tabs, and the position derives the split direction.
 
@@ -61,7 +60,7 @@ When the split axis has at least six cells, each pane keeps at least three cells
 
 A layout change moves nothing else (`overview.md`), and both remembered shares persist across it.
 
-`navigator-hide` hides the navigator, and the read pane takes the whole body. No divider exists while hidden, so nothing drags. The same action shows it again in its kept position and share, and focus stays on the read pane. Hidden is one state across `Changes` and `All files`. On `PR` the navigator always shows: `navigator-hide` is inert there, and a `PR` visit leaves the hidden state untouched. Restarting reviewr shows the navigator. Config recovery preserves the hidden state (`config.md`). Hiding is presence, never a position. The `navigator-position` cycle has no hidden stop.
+`navigator-hide` hides the navigator, and the read pane takes the whole body. No divider exists while hidden, so nothing drags. The same action shows it again in its kept position and share, and focus stays on the read pane. Hidden is `Changes` state. On `PR` the navigator always shows: `navigator-hide` is inert there, and a `PR` visit leaves the hidden state untouched. Restarting reviewr shows the navigator. Config recovery preserves the hidden state (`config.md`). Hiding is presence, never a position. The `navigator-position` cycle has no hidden stop.
 
 ## Behavior
 
@@ -79,14 +78,14 @@ A layout change moves nothing else (`overview.md`), and both remembered shares p
 - A poll rebuilds the changed set and the file tree, reconciles them into the view (`overview.md`), and refreshes the open diff as it lands.
 - A result lands whole: the header counts and the list they head come from one refresh.
 - A result lands only when the view it described is still current: the same repository, tab, scope, and scope base. The scope base is the branch base or the turn baseline. A result that no longer matches is discarded, and a newer request supersedes an older one.
-- Entering a file tab paints the tab's stashed state in the switch frame, exactly as it was left, and a refresh lands behind it (`overview.md`). A first-ever visit has no stash and loads before its frame.
-- A scope switch rebuilds the changed set before its frame. A `last-turn` switch diffs against the most recently observed baseline. The `All files` tree re-marks its rows in place and refreshes behind the switch.
+- Returning to `Changes` paints its frozen state in the switch frame, exactly as it was left, and a refresh lands behind it (`overview.md`). A first-ever visit has nothing to paint and loads before its frame.
+- A scope switch rebuilds the changed set before its frame. A `last-turn` switch diffs against the most recently observed baseline.
 - While a comment is being composed, the input and its diff are frozen. A result that lands mid-composition leaves both untouched, however early its refresh began. The file list still updates.
 - `r` triggers an immediate refresh. Its result lands like a poll's.
 - `r` shows a one-cell `⟳` immediately. An ambient refresh shows it only after 200ms in flight. Once shown, the glyph holds for at least 300ms. It paints in a reserved cell at the end of the tab strip, so nothing shifts when it appears.
-- Each tab shows only its own refresh: the file tabs the world refresh, the `PR` tab its fetch on its own cadence (`pr-tab.md`).
+- Each tab shows only its own refresh: `Changes` the world refresh, the `PR` tab its fetch on its own cadence (`pr-tab.md`).
 - Refresh uses no herdr events. The same poll samples the agents in the worktree for the `last-turn` baseline (`herdr-host.md`).
-- In `last-turn` scope, before a turn start is observed, `Changes` names why it is empty and never shows a stale or whole-worktree diff. Both panes read one message, so they cannot disagree. A poll that found no agent in the worktree reads `no agent works here`; anything else, including membership no poll has observed yet, reads `waiting for the first turn` (`herdr-host.md`). `All files` keeps its content.
+- In `last-turn` scope, before a turn start is observed, `Changes` names why it is empty and never shows a stale or whole-worktree diff. Both panes read one message, so they cannot disagree. A poll that found no agent in the worktree reads `no agent works here`; anything else, including membership no poll has observed yet, reads `waiting for the first turn` (`herdr-host.md`).
 
 ## Failure semantics
 
@@ -115,4 +114,3 @@ A layout change moves nothing else (`overview.md`), and both remembered shares p
 - [file-list](./file-list.md)
 - [pr-tab](./pr-tab.md)
 - [review-model](./review-model.md)
-- [search](./search.md)

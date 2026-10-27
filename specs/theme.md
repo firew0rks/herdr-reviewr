@@ -41,7 +41,7 @@ The derived slots:
 | `subtext0`                    | `text`, dimmed toward `base`              | secondary text                   |
 | `del_bg` / `ins_bg`           | `red` / `green` blended over `base`       | deletion / insertion row tint    |
 | `emph_del_bg` / `emph_ins_bg` | `red` / `green`, a stronger blend         | word-emphasis fill               |
-| `match_hl`                    | `yellow`, a stronger blend                | search match highlight           |
+| `match_hl`                    | `yellow`, a stronger blend                | find match highlight             |
 
 The theme set:
 
@@ -59,7 +59,7 @@ A herdr name outside this set (`kanagawa`, `kanagawa-lotus`, `vesper`, `terminal
 - Each theme declares its `appearance`, light or dark. Dark themes lighten `base` for surfaces, light themes darken it.
 - The cursor, selection, and fold fills step `surface2` > `surface1` > `surface0`. The cursor is the strongest contrast, a fold the faintest.
 - Every visible pane fills its cursor row. The focused pane fills with `surface2`, the other with `surface1`, so which pane holds focus reads at a glance. A hidden navigator leaves one pane, filled with `surface2` (`tui.md`).
-- Dim text on a filled row lifts from `overlay0` to `subtext0`, in every list that fills a row. The file list's indent, a search hit's line number, and a picker row's state and tab all stay readable under the fill.
+- Dim text on a filled row lifts from `overlay0` to `subtext0`, in every list that fills a row. The file list's indent and a picker row's state and tab all stay readable under the fill.
 - `catppuccin` pins its whole palette as a literal and renders as faithful Catppuccin Mocha.
 
 ### Diff-fill legibility

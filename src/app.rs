@@ -10,7 +10,7 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 
-use crate::diff::{DiffCache, FileDiff, Row, View};
+use crate::diff::{DiffCache, FileDiff, Row};
 use crate::export::{Agent, ExportTarget, format_all};
 use crate::file_list::{self, Annotation, Entry, RowKind};
 use crate::forge;
@@ -27,11 +27,6 @@ const DEFAULT_STACK_PCT: u16 = 25;
 const MIN_NAVIGATOR_PCT: u16 = 15;
 const MAX_SIDE_PCT: u16 = 60;
 const MAX_STACK_PCT: u16 = 50;
-/// The search screen's results-pane share: half the body by default, dragged within
-/// wide bounds — the geometry's minimum pane sizes clamp the rest (specs/search.md).
-const DEFAULT_SEARCH_PCT: u16 = 50;
-const MIN_SEARCH_PCT: u16 = 10;
-const MAX_SEARCH_PCT: u16 = 90;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum DividerDrag {
@@ -57,12 +52,11 @@ enum Anchor {
     Dir(String),
 }
 
-/// Which top-level tab is active: the changes reviewer, the whole-repo browser, the
-/// read-only PR mirror, or the issues that PR closes.
+/// Which top-level tab is active: the changes reviewer, the read-only PR mirror, or the
+/// issues that PR closes.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Tab {
     Changes,
-    AllFiles,
     Pr,
     Issues,
 }
@@ -92,40 +86,6 @@ impl Tab {
 pub enum RefreshKind {
     Ambient,
     Forced,
-}
-
-impl Tab {
-    /// Whether this tab uses the file-tree / diff machinery (and so the per-tab stash). The
-    /// `PR` tab does not — it holds its own state and never swaps into the diff fields.
-    pub(crate) fn is_file_tab(self) -> bool {
-        matches!(self, Tab::Changes | Tab::AllFiles)
-    }
-}
-
-/// The inactive tab's saved navigator and read-pane state, swapped in on a tab switch so
-/// each tab keeps its own selection and scroll (specs/tui.md).
-#[derive(Debug, Default)]
-struct TabStash {
-    entries: Vec<Entry>,
-    file_rows: Vec<file_list::Row>,
-    file_cursor: usize,
-    file_scroll: usize,
-    toggled_dirs: HashSet<String>,
-    diff: FileDiff,
-    visible: Vec<Row>,
-    expanded_folds: HashSet<u32>,
-    diff_path: Option<String>,
-    diff_cursor: usize,
-    diff_scroll: usize,
-    h_scroll: usize,
-    select_anchor: Option<usize>,
-    preview: bool,
-    preview_scroll: usize,
-    preview_scrolled: bool,
-    preview_text: String,
-    /// Whether this tab has ever completed a reload. A never-visited tab has nothing worth
-    /// painting, so its first entry loads before the frame instead of deferring.
-    visited: bool,
 }
 
 /// A file crossing offered by the footer, waiting for the hunk step that armed it to repeat: the
@@ -189,9 +149,6 @@ pub enum Mode {
     /// Choosing the `branch` scope's base (`specs/input.md` Base picker). Its state lives in
     /// [`App::base_picker`].
     BasePick,
-    /// The search screen, replacing the body from any tab (specs/search.md). Its state
-    /// lives in [`App::search`].
-    Search,
     /// The in-file find band over the read pane (specs/find-in-file.md). Its state lives in
     /// [`App::find`].
     Find,
@@ -204,106 +161,11 @@ impl Mode {
     /// Continuity), and it captures the mouse so no click reaches the view behind
     /// (`specs/input.md`).
     ///
-    /// `Search` replaces the body rather than holding a place in it, and `Find` is a band the
-    /// reviewer navigates the live diff with. Neither freezes anything, so neither is modal here.
+    /// `Find` is a band the reviewer navigates the live diff with. It freezes nothing, so it
+    /// is not modal here.
     pub fn is_modal(&self) -> bool {
         matches!(self, Mode::Composing { .. } | Mode::List | Mode::Picker | Mode::BasePick)
     }
-}
-
-/// The search screen's mode: which result set the list shows (specs/search.md).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum SearchMode {
-    /// The engine's path matches, one row per file.
-    Files,
-    /// The engine's content matches, grouped by file.
-    Code,
-}
-
-/// Where the search overlay stands with the engine (specs/search.md).
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub enum SearchPhase {
-    /// The engine's first scan is still running: the overlay shows `indexing…`.
-    Indexing,
-    /// Results are painted; stale ones stay up while a newer query is in flight.
-    Ready,
-    /// The engine failed; the message shows inside the overlay.
-    Error(String),
-}
-
-/// The picked result's file rendered as the read pane's File view, hit-centered
-/// (specs/search.md Preview).
-#[derive(Debug)]
-pub struct SearchPreview {
-    pub path: String,
-    pub diff: crate::diff::FileDiff,
-    /// A `Code` pick's hit: the 1-based line and its matched byte spans, banded and
-    /// emphasized by the renderer. A `Files` pick previews from the top.
-    pub hit: Option<(u64, Vec<(u32, u32)>)>,
-    /// Top visible row. The renderer centers the hit here once per build, then
-    /// `PageUp`/`PageDown` move it freely.
-    pub scroll: std::cell::Cell<usize>,
-    /// Cleared by the renderer after it centers the hit for this build.
-    pub center: std::cell::Cell<bool>,
-}
-
-/// The search screen's state: the query as typed, the mode, the pick, the last landed
-/// results, and the settled preview. Dropped whole on close — a query is cheap, unlike a
-/// comment draft.
-#[derive(Debug)]
-pub struct SearchOverlay {
-    pub query: String,
-    /// The caret into `query`: a char index, edited by the shared caret ops (`input.md`).
-    pub caret: usize,
-    pub search_mode: SearchMode,
-    /// The picked row, indexed into the active mode's result set.
-    pub pick: usize,
-    /// Top visible result row, kept by the renderer so the pick stays in view.
-    pub scroll: std::cell::Cell<usize>,
-    pub results: crate::search::SearchResults,
-    pub phase: SearchPhase,
-    /// The settled preview of the picked result. `None` until the first build, or while
-    /// nothing is pickable. The event loop rebuilds it once input settles, whenever it no
-    /// longer matches the pick — a sweep never waits on a build (specs/search.md).
-    pub preview: Option<SearchPreview>,
-}
-
-impl SearchOverlay {
-    fn new() -> Self {
-        Self {
-            query: String::new(),
-            caret: 0,
-            search_mode: SearchMode::Files,
-            pick: 0,
-            scroll: std::cell::Cell::new(0),
-            results: crate::search::SearchResults::default(),
-            phase: SearchPhase::Indexing,
-            preview: None,
-        }
-    }
-
-    /// How many rows the pick can land on in the active mode.
-    pub fn picks(&self) -> usize {
-        match self.search_mode {
-            SearchMode::Files => self.results.files.len(),
-            SearchMode::Code => self.results.code.len(),
-        }
-    }
-
-    /// The picked result in the active mode.
-    pub fn picked(&self) -> Option<PickedResult<'_>> {
-        match self.search_mode {
-            SearchMode::Files => self.results.files.get(self.pick).map(PickedResult::File),
-            SearchMode::Code => self.results.code.get(self.pick).map(PickedResult::Code),
-        }
-    }
-}
-
-/// One picked search result, borrowed from the overlay's results.
-#[derive(Debug)]
-pub enum PickedResult<'a> {
-    File(&'a crate::search::FileHit),
-    Code(&'a crate::search::CodeHit),
 }
 
 /// The in-file find band's state while `mode == Mode::Find` (specs/find-in-file.md). The current
@@ -377,17 +239,9 @@ pub enum FooterAction {
     MovePage,
     ExpandDir,
     CollapseDir,
-    /// Open the search screen — offered in every context, on every tab (specs/search.md).
-    Search,
     /// Open the in-file find band — offered wherever the read pane has content
     /// (specs/find-in-file.md).
     Find,
-    /// The search screen's own bar: flip, pick, open, close (specs/search.md). The flip
-    /// label names the destination mode, derived from the current mode at render time.
-    FlipSearchMode,
-    PickResult,
-    OpenResult,
-    CloseSearch,
     /// The find band's own bar: step between matches, and close (specs/find-in-file.md).
     FindStep,
     CloseFind,
@@ -459,13 +313,8 @@ pub struct App {
     pub scope: Scope,
     /// The active tab; it drives both panes and selects the per-tab state in play.
     pub tab: Tab,
-    /// Which file tab (`Changes`/`AllFiles`) currently occupies the diff/file fields. Tracked
-    /// apart from `tab` so the `PR` tab can be active while a file tab's state stays frozen in
-    /// place, with the other file tab in the stash.
-    active_file_tab: Tab,
     pub focus: Focus,
-    /// The navigator's source for the active tab: changed files in `Changes`, the whole
-    /// worktree in `All files`.
+    /// The navigator's source: the scope's changed files.
     pub entries: Vec<Entry>,
     /// The flattened directory tree over `entries` — the rows the navigator paints. The
     /// `file_cursor` indexes this, not `entries`.
@@ -486,16 +335,11 @@ pub struct App {
     /// Whether the current compose was opened from the comments-list overlay, so finishing it
     /// returns there rather than dropping to the diff.
     resume_list: bool,
-    /// Directory paths toggled away from the tab's resting state — collapsed in `Changes`
-    /// (expanded by default), expanded in `All files` (collapsed by default). Keyed by path,
-    /// so it survives a poll that rebuilds the tree.
-    toggled_dirs: HashSet<String>,
-    /// The inactive tab's saved state, swapped in on a tab switch.
-    stash: TabStash,
+    /// Directories collapsed away from their expanded resting state. Keyed by path, so it
+    /// survives a poll that rebuilds the tree.
+    collapsed_dirs: HashSet<String>,
     /// The active scope's changed files, keyed by repo-relative path and recomputed every
-    /// reload regardless of tab. Keys back the header count and diff-comment staleness; values
-    /// annotate `All files` entries with their marker and stats. Stays correct while `All
-    /// files` lists the whole worktree.
+    /// reload. Keys back the header count and comment staleness; values carry the totals.
     changed: HashMap<String, Annotation>,
     pub diff: FileDiff,
     /// The rows actually shown: `diff.rows` with each fold collapsed to a marker or
@@ -514,14 +358,14 @@ pub struct App {
     pub h_scroll: usize,
     /// Whether long diff lines wrap (default) or are scrolled horizontally.
     pub wrap: bool,
-    /// Whether the markdown preview is open for the active file tab's file. Both file tabs
-    /// render it; the flag is per file tab and resets on a file change (specs/diff-view.md).
+    /// Whether the markdown preview is open for the open file. It resets on a file change
+    /// (specs/diff-view.md).
     /// Only the armed toggle — `preview_active()` is the honest on-screen predicate.
     preview: bool,
     /// Top visible rendered line of the markdown preview, clamped to the rendered length.
     pub preview_scroll: usize,
     /// The open markdown file's current content — the preview's render input, refreshed by
-    /// `set_diff` and `set_file_view` so no frame rebuilds it. Empty whenever the current
+    /// `set_diff` so no frame rebuilds it. Empty whenever the current
     /// content does not render as a preview: a non-markdown file, a notice, or an empty new
     /// side (a deleted or empty file). One half of the `previewable()` signal.
     preview_text: String,
@@ -529,9 +373,6 @@ pub struct App {
     /// by the renderer each frame so [`Self::preview_scroll_by`] can clamp. `usize::MAX`
     /// until the first paint.
     preview_max_scroll: std::cell::Cell<usize>,
-    /// Whether a scroll input moved the preview since entry — the exact-restore
-    /// predicate; a refresh clamp never sets it (specs/diff-view.md).
-    preview_scrolled: bool,
     /// The diff pane's inner width, noted each paint, so the toggle's position mapping
     /// renders at the width the pane will paint with.
     pane_width: std::cell::Cell<usize>,
@@ -551,9 +392,6 @@ pub struct App {
     /// The presence toggle over the navigator, one state across all tabs, never a position
     /// (specs/tui.md). A restart shows the navigator; recovery preserves this.
     pub navigator_hidden: bool,
-    /// The search screen's results-pane share — search's own session value, separate
-    /// from the review layout's shares (specs/search.md).
-    pub search_pct: u16,
     divider_drag: DividerDrag,
     pub select_anchor: Option<usize>,
     pub store: CommentStore,
@@ -576,7 +414,7 @@ pub struct App {
     /// The comment editor's caret: a char index into `input` (`0..=chars().count()`).
     pub caret: usize,
     pub status: String,
-    /// Whether the footer's `?` shortcut list is expanded. Global place state, not tab-stashed: one
+    /// Whether the footer's `?` shortcut list is expanded. Global place state, not per tab: one
     /// toggle across every tab, moved only by `?` and `esc`, preserved through a poll and config
     /// recovery (`specs/input.md`, `overview.md` Continuity).
     pub keys_expanded: bool,
@@ -616,13 +454,6 @@ pub struct App {
     /// The world refresh request awaiting dispatch, if any; the event loop hands it to
     /// the worker after the frame paints (specs/tui.md).
     pub world_request: Option<crate::world::WorldRequest>,
-    /// The search overlay's state while `mode == Mode::Search`, `None` otherwise.
-    pub search: Option<SearchOverlay>,
-    /// Set by every query edit (and the open); the event loop dispatches the query to the
-    /// search worker after the frame paints, tagged latest-wins (specs/search.md).
-    pub search_dirty: bool,
-    /// A picked path awaiting its frecency record; the event loop hands it to the worker.
-    pub search_track: Option<String>,
     /// The in-file find band's state while `mode == Mode::Find`, `None` otherwise
     /// (specs/find-in-file.md).
     pub find: Option<Find>,
@@ -632,8 +463,8 @@ pub struct App {
     /// Set by `r`: the next refresh is commanded, so the glyph lights immediately
     /// instead of waiting out the ambient appear delay (specs/tui.md).
     pub refresh_commanded: bool,
-    /// Whether the active file tab has ever completed a reload (stash counterpart:
-    /// `TabStash::visited`). Gates the first-visit synchronous load in [`Self::set_tab`].
+    /// Whether `Changes` has ever completed a reload. Gates the first-visit synchronous load
+    /// in [`Self::set_tab`].
     tab_visited: bool,
     highlighter: Highlighter,
     /// The active palette every renderer paints from (`specs/theme.md`).
@@ -647,7 +478,7 @@ pub struct App {
     /// The last theme name requested, so re-resolving the same name skips work and logging.
     requested_theme_name: Option<String>,
     cache: DiffCache,
-    /// The one-slot markdown render memo behind the PR read pane and the file tabs'
+    /// The one-slot markdown render memo behind the PR read pane and the `Changes`
     /// preview (`specs/markdown.md`). Interior-mutable so the renderer can fill it from
     /// `&App`; cleared with the diff cache on a theme switch.
     markdown_cache: std::cell::RefCell<crate::markdown::RenderCache>,
@@ -701,7 +532,6 @@ impl App {
             base_epoch: 0,
             scope,
             tab: Tab::Changes,
-            active_file_tab: Tab::Changes,
             focus: Focus::Files,
             entries: Vec::new(),
             file_rows: Vec::new(),
@@ -711,8 +541,7 @@ impl App {
             reveal_diff: false,
             armed_cross: None,
             resume_list: false,
-            toggled_dirs: HashSet::new(),
-            stash: TabStash::default(),
+            collapsed_dirs: HashSet::new(),
             changed: HashMap::new(),
             diff: FileDiff::empty(),
             visible: Vec::new(),
@@ -726,7 +555,6 @@ impl App {
             preview_scroll: 0,
             preview_text: String::new(),
             preview_max_scroll: std::cell::Cell::new(usize::MAX),
-            preview_scrolled: false,
             pane_width: std::cell::Cell::new(0),
             painted_links: std::cell::RefCell::new(Vec::new()),
             painted_anchors: std::cell::RefCell::new(Vec::new()),
@@ -735,7 +563,6 @@ impl App {
             navigator_side_pct: DEFAULT_SIDE_PCT,
             navigator_stack_pct: DEFAULT_STACK_PCT,
             navigator_hidden: false,
-            search_pct: DEFAULT_SEARCH_PCT,
             divider_drag: DividerDrag::Idle,
             select_anchor: None,
             store: CommentStore::new(),
@@ -768,9 +595,6 @@ impl App {
             reveal_issues_nav: std::cell::Cell::new(true),
             pr_pending: None,
             world_request: None,
-            search: None,
-            search_dirty: false,
-            search_track: None,
             find: None,
             refresh_indicator: false,
             refresh_commanded: false,
@@ -838,14 +662,12 @@ impl App {
     /// Block the reviewr pane on one whole-file configuration failure.
     pub fn set_config_error(&mut self, error: String) {
         self.cancel_divider_drag();
-        // The search overlay, the find band, and the agent picker close when the config view
-        // takes over; recovery restores the tab beneath them. The query is not restored, and
-        // neither are the picker's frozen rows, which would be stale by then (specs/search.md,
-        // specs/find-in-file.md, specs/herdr-host.md).
+        // The find band and the agent picker close when the config view takes over; recovery
+        // restores the tab beneath them. The picker's frozen rows are not restored, since they
+        // would be stale by then (specs/find-in-file.md, specs/herdr-host.md).
         // The picker closes first, onto the mode it opened over, so the two closers below then
         // tear down that mode's own state instead of leaving it restored but emptied.
         self.close_picker();
-        self.close_search();
         self.close_find();
         self.config = PluginConfigState::Blocked { error };
         self.pr_pending = None;
@@ -889,22 +711,19 @@ impl App {
         if self.navigator_hidden {
             self.focus = Focus::Diff;
         }
-        self.search_pct = old.search_pct;
         // A tab switch requested its refresh and recovery landed first: the carried fields
-        // below may reinstate the stale stashed frame, so the pending request must survive
+        // below may reinstate the stale frozen frame, so the pending request must survive
         // the swap or that frame never refreshes until the next poll.
         self.world_request = old.world_request.take();
         let old_mode = old.mode.clone();
         match old_mode {
-            // `set_config_error` closes the search overlay, the find band, and the agent picker
-            // before the mode is stored, so none reaches recovery; the search query is not
-            // restored and the picker's frozen rows are not either (specs/search.md,
-            // specs/find-in-file.md, specs/herdr-host.md).
-            Mode::Normal | Mode::Search | Mode::Find | Mode::Picker => {}
+            // `set_config_error` closes the find band and the agent picker before the mode is
+            // stored, so neither reaches recovery; the picker's frozen rows are not restored
+            // (specs/find-in-file.md, specs/herdr-host.md).
+            Mode::Normal | Mode::Find | Mode::Picker => {}
             Mode::List | Mode::Composing { .. } | Mode::BasePick => {
                 self.scope = old.scope;
                 self.tab = old.tab;
-                self.active_file_tab = old.active_file_tab;
                 self.focus = old.focus;
                 self.entries = std::mem::take(&mut old.entries);
                 self.file_rows = std::mem::take(&mut old.file_rows);
@@ -926,12 +745,10 @@ impl App {
                 self.h_scroll = old.h_scroll;
                 self.select_anchor = old.select_anchor;
                 self.resume_list = old.resume_list;
-                self.toggled_dirs = std::mem::take(&mut old.toggled_dirs);
-                self.stash = std::mem::take(&mut old.stash);
+                self.collapsed_dirs = std::mem::take(&mut old.collapsed_dirs);
                 self.wrap = old.wrap;
                 self.preview = old.preview;
                 self.preview_scroll = old.preview_scroll;
-                self.preview_scrolled = old.preview_scrolled;
                 self.preview_text = std::mem::take(&mut old.preview_text);
                 self.mode = old.mode.clone();
                 self.input = std::mem::take(&mut old.input);
@@ -985,12 +802,6 @@ impl App {
         self.file_under_cursor_index().map(|i| &self.entries[i])
     }
 
-    /// A directory's resting state in the active tab: `Changes` opens expanded, `All files`
-    /// collapsed (specs/file-list.md).
-    fn default_expanded(&self) -> bool {
-        self.tab == Tab::Changes
-    }
-
     /// The `entries` index of the file row under the cursor, or `None` on a directory row.
     fn file_under_cursor_index(&self) -> Option<usize> {
         self.file_rows.get(self.file_cursor).and_then(file_list::Row::file_index)
@@ -1011,8 +822,7 @@ impl App {
 
     /// Rebuild the flattened tree from `entries` and the toggled-directory set.
     fn rebuild_file_rows(&mut self) {
-        self.file_rows =
-            file_list::build(&self.entries, &self.toggled_dirs, self.default_expanded());
+        self.file_rows = file_list::build(&self.entries, &self.collapsed_dirs);
     }
 
     /// What the cursor currently points at — a file (by path) or a directory (by path) — so
@@ -1049,8 +859,8 @@ impl App {
     pub fn reload(&mut self) -> Result<()> {
         self.ensure_config_ready()?;
         // The PR tab holds its own state and renders nothing from the file tree, so a poll on
-        // it skips the rebuild; switching back to a file tab reloads it then (specs/tui.md).
-        if !self.tab.is_file_tab() {
+        // it skips the rebuild; switching back to `Changes` reloads it then (specs/tui.md).
+        if self.tab != Tab::Changes {
             return Ok(());
         }
         // Outside a git repo, show an empty state rather than failing (herdr-host.md).
@@ -1083,13 +893,6 @@ impl App {
             base: self.base.clone(),
             base_epoch: self.base_epoch,
             turn_baseline: self.turn_baseline.clone(),
-            // `Changes` never reads the toggled set, so it stays out of that tab's tag —
-            // a directory toggle there must not invalidate an in-flight build.
-            toggled_dirs: if self.tab == Tab::AllFiles {
-                self.toggled_dirs.clone()
-            } else {
-                HashSet::new()
-            },
         }
     }
 
@@ -1136,9 +939,6 @@ impl App {
             }
             self.load_read();
         }
-        // A landed poll repaints the search preview in place — never the results, which
-        // describe the worktree when their query ran (specs/search.md).
-        self.refresh_search_preview();
         // The find band closes if its file lost its searchable rows or changed identity under the
         // poll — a forced return, like the markdown preview (specs/find-in-file.md). The current
         // match otherwise follows the reconciled cursor, so nothing else to do.
@@ -1148,8 +948,8 @@ impl App {
         self.tab_visited = true;
     }
 
-    /// Load the read pane for the active tab: the scope diff in `Changes`, the whole-file
-    /// content in `All files`. Both flatten into `visible` and settle the cursor/scroll.
+    /// Load the read pane: the shown file's scope diff, flattened into `visible` with the
+    /// cursor and scroll settled.
     fn load_read(&mut self) {
         let Some(entry) = self.shown_entry() else {
             self.diff = FileDiff::empty();
@@ -1158,18 +958,7 @@ impl App {
             self.reset_diff_view();
             return;
         };
-        self.open_path_in_tab(entry.path, entry.previous_path);
-    }
-
-    /// Open `path` in the active tab's read pane: the scope diff in `Changes` (rename-aware via
-    /// `previous_path`), the whole-file content in `All files`. The one place this dispatch lives,
-    /// so opening a file from the tree and from a comment edit can't drift apart.
-    fn open_path_in_tab(&mut self, path: String, previous_path: Option<String>) {
-        match self.tab {
-            Tab::AllFiles => self.set_file_view(&path),
-            // `Changes` (the `PR` tab never opens a file in the read pane).
-            _ => self.set_diff(path, previous_path),
-        }
+        self.set_diff(entry.path, entry.previous_path);
     }
 
     /// Build the diff for a specific `path` regardless of whether its row is visible in the
@@ -1188,9 +977,9 @@ impl App {
         self.diff_path = Some(path.clone());
         let (old, new) = self.content_sides(&path, previous_path.as_deref());
         self.diff = self.cache.get(path, previous_path, &old, &new, &self.highlighter);
-        // Hold the new side as the preview's render input, the same current content the File
-        // view previews. A non-markdown file, a notice, or a deleted file (empty new side)
-        // holds nothing, so its toggle stays inert (specs/diff-view.md).
+        // Hold the new side as the preview's render input. A non-markdown file, a notice, or a
+        // deleted file (empty new side) holds nothing, so its toggle stays inert
+        // (specs/diff-view.md).
         if self.markdown_file() && self.diff.state == crate::diff::FileState::Normal {
             self.preview_text = new;
         } else {
@@ -1198,51 +987,6 @@ impl App {
         }
         self.rebuild_visible();
         self.settle_read();
-    }
-
-    /// Build the File view for `path`: its current worktree content as `Context` rows, no
-    /// folds. The `All files` read pane (specs/diff-view.md). Content is scope-independent.
-    fn set_file_view(&mut self, path: &str) {
-        // Opening a different file starts in source; a same-file refresh keeps the
-        // preview choice and its scroll (specs/diff-view.md).
-        if self.diff_path.as_deref() != Some(path) {
-            self.preview = false;
-            self.preview_scroll = 0;
-            self.preview_max_scroll.set(usize::MAX);
-        }
-        self.diff_path = Some(path.to_string());
-        self.expanded_folds.clear(); // the File view has no folds
-        let (diff, content) = self.file_view(path);
-        // Keep the preview's render input current without a per-frame rebuild. A file the
-        // source view degrades to a notice never previews (specs/diff-view.md), so its
-        // content is not held either.
-        if self.markdown_file() && diff.state == crate::diff::FileState::Normal {
-            self.preview_text = content;
-        } else {
-            self.preview_text.clear();
-        }
-        self.diff = diff;
-        self.rebuild_visible();
-        self.settle_read();
-    }
-
-    /// Build the read pane's File view for `path`: an over-budget blob (a model weight, a
-    /// vendored bundle) previews as the too-large notice without a read — reading it whole
-    /// would spike the UI thread before `build_file`'s budget could discard it — else the
-    /// worktree content is highlighted through the shared content-hash cache. Returns the
-    /// diff and the content read (empty for the notice), for a caller that also keeps the
-    /// raw content (specs/diff-view.md). The one build the source view and the search
-    /// preview share.
-    fn file_view(&mut self, path: &str) -> (FileDiff, String) {
-        let oversize = std::fs::metadata(self.repo.join(path))
-            .is_ok_and(|m| crate::diff::over_byte_budget(m.len() as usize));
-        if oversize {
-            (FileDiff::too_large_notice(path.to_string()), String::new())
-        } else {
-            let content = worktree_content(&self.repo, path);
-            let diff = self.cache.get_file(path.to_string(), &content, &self.highlighter);
-            (diff, content)
-        }
     }
 
     /// Clamp the cursor, scroll, and selection to the rebuilt `visible`, keeping the reader's
@@ -1429,7 +1173,7 @@ impl App {
         self.diff_path.as_deref().is_some_and(is_markdown_path)
     }
 
-    /// Whether the `m` toggle would open a preview here: a file tab holding current markdown
+    /// Whether the `m` toggle would open a preview here: `Changes` holding current markdown
     /// content over a rendered pane. `preview_text` is filled only for a markdown file whose
     /// source rows render, so a notice, a deleted file (empty new side), or a rename away from
     /// markdown empties it and makes the toggle inert. The `visible` guard is not redundant:
@@ -1438,7 +1182,7 @@ impl App {
     /// footer offers `m preview` exactly when this holds.
     #[must_use]
     fn previewable(&self) -> bool {
-        self.tab.is_file_tab() && !self.preview_text.is_empty() && !self.visible.is_empty()
+        self.tab == Tab::Changes && !self.preview_text.is_empty() && !self.visible.is_empty()
     }
 
     /// Whether the markdown preview is on screen: previewable and the toggle armed. A file
@@ -1449,9 +1193,8 @@ impl App {
         self.previewable() && self.preview
     }
 
-    /// Toggle source ↔ preview on a markdown file in a file tab; inert anywhere else.
-    /// Entering clears a live selection and opens at the cursor's block; returning in the
-    /// File view maps the top visible block back to a source cursor (specs/diff-view.md).
+    /// Toggle source ↔ preview on a markdown file in `Changes`; inert anywhere else.
+    /// Entering clears a live selection and opens at the cursor's block (specs/diff-view.md).
     pub fn toggle_preview(&mut self) {
         // A file whose source view shows a notice, or a deleted file with no current
         // content, is not previewable, so the title can never claim a preview over a
@@ -1459,12 +1202,12 @@ impl App {
         if !self.previewable() {
             return;
         }
+        // Returning leaves the cursor, scroll, and folds exactly as they were.
         if self.preview {
-            self.return_from_preview();
+            self.preview = false;
         } else {
             self.clear_selection();
             self.preview = true;
-            self.preview_scrolled = false;
             self.align_preview_to_cursor();
         }
     }
@@ -1479,8 +1222,7 @@ impl App {
         }
         // The preview renders the current content, so a row's new-side line is its render
         // source line. A row without one — a deletion, a fold — aligns by the nearest row
-        // above with one; none above leaves the preview at its top (specs/diff-view.md). A
-        // File-view row is a context row numbered by its position, so this reduces to it.
+        // above with one; none above leaves the preview at its top (specs/diff-view.md).
         let Some(target) = self.visible[..=self.diff_cursor]
             .iter()
             .rev()
@@ -1498,38 +1240,10 @@ impl App {
         self.preview_scroll = rendered.meta.partition_point(|m| m.source_line < block_line);
     }
 
-    /// Leave the preview. In the Diff view the cursor, scroll, and folds stay exactly as
-    /// they were left. In the File view a scrolled preview maps its top visible block back
-    /// to a source cursor; an unscrolled one leaves the source position exactly as it was
-    /// (specs/diff-view.md).
-    fn return_from_preview(&mut self) {
-        let scrolled = self.preview_scrolled;
-        self.preview = false;
-        if self.tab != Tab::AllFiles {
-            return;
-        }
-        let width = self.pane_width.get();
-        if !scrolled || width == 0 || self.preview_text.is_empty() {
-            return;
-        }
-        let rendered = self.markdown_render(&self.preview_text, width);
-        if rendered.meta.is_empty() || self.visible.is_empty() {
-            return;
-        }
-        // Clamp to what the frame painted: a stale scroll past the max would map to a
-        // block below the one the reader actually saw at the top of the pane.
-        let top =
-            self.preview_scroll.min(self.preview_max_scroll.get()).min(rendered.meta.len() - 1);
-        let row = rendered.meta[top].source_line.saturating_sub(1);
-        self.diff_cursor = row.min(self.visible.len() - 1);
-        self.reveal_diff = true;
-    }
-
     /// Scroll the preview by `delta` rendered lines, stopping with the last line at the
     /// pane's bottom edge — content that fits the pane does not scroll, and over-scroll
     /// never builds a dead zone the reader must unwind.
     pub fn preview_scroll_by(&mut self, delta: isize) {
-        self.preview_scrolled = true;
         self.preview_scroll =
             clamp_scroll(self.preview_scroll, delta, self.preview_max_scroll.get());
     }
@@ -1636,7 +1350,6 @@ impl App {
         if self.tab == Tab::Pr {
             self.pr_read_scroll = idx.min(self.pr_read_max_scroll.get());
         } else if self.preview_active() {
-            self.preview_scrolled = true;
             self.preview_scroll = idx.min(self.preview_max_scroll.get());
         }
     }
@@ -1768,17 +1481,6 @@ impl App {
         self.set_navigator_share(pct);
     }
 
-    /// Set the search screen's results share from a captured drag on its divider. The
-    /// review layout's shares are untouched (specs/search.md).
-    pub fn drag_search_divider(&mut self, axis_len: u16, offset: u16) {
-        if !self.divider_drag_active() || axis_len == 0 {
-            return;
-        }
-        let offset = offset.min(axis_len);
-        let pct = (u32::from(offset) * 100 / u32::from(axis_len)) as u16;
-        self.search_pct = pct.clamp(MIN_SEARCH_PCT, MAX_SEARCH_PCT);
-    }
-
     /// Clamp and store one share through the active axis's single bounds/ownership contract.
     fn set_navigator_share(&mut self, share: u16) {
         let max = if self.navigator_position.stacked() { MAX_STACK_PCT } else { MAX_SIDE_PCT };
@@ -1861,45 +1563,17 @@ impl App {
     }
 
     /// Rebuild the views after the changeset's base moved — a scope switch or a base pick.
-    /// The change replaces the Changes changeset (and each file's old side), so the Changes
-    /// tab snaps to the top: reset its cursor, folds, and diff scroll, and drop cached diffs.
-    /// The `All files` listing and File view are base-independent (only the annotations
-    /// move), so its own state is held by `reload`. The Changes state is the active one on
-    /// `Changes` and the stashed one while `All files` is shown — reset whichever holds it,
-    /// so a return to Changes never lands on a stale scroll or a pre-expanded fold.
+    /// The change replaces the changeset (and each file's old side), so `Changes` snaps to
+    /// the top: reset its cursor, folds, and diff scroll, and drop cached diffs. Off the tab
+    /// the reset waits, frozen, for the next visit's reload.
     fn rebase_changes(&mut self) -> Result<()> {
         self.cache = DiffCache::new();
-        if self.tab == Tab::Changes {
-            self.file_cursor = 0;
-            self.expanded_folds.clear();
-            self.reset_diff_view();
-            // The changed set rebuilds before the frame, so the list never shows another
-            // base's files under the new base's label (specs/tui.md). In `Changes` the
-            // changeset is the whole snapshot, so this is the full (cheap) reload.
-            self.reload()?;
-        } else {
-            self.stash.file_cursor = 0;
-            self.stash.expanded_folds.clear();
-            self.stash.diff_cursor = 0;
-            self.stash.diff_scroll = 0;
-            self.stash.h_scroll = 0;
-            self.stash.select_anchor = None;
-            // `All files` keeps its tree; only the changed set rebuilds before the frame.
-            // The tree's annotations refresh behind it via the worker (specs/tui.md).
-            let (branch_base, changed) = crate::world::build_changed(&self.world_input())?;
-            self.adopt_branch_base(branch_base);
-            self.changed = crate::world::annotate(&changed);
-            // Re-mark the tree in place — the rows are base-independent, only their
-            // badges move, so the switch frame never shows the old base's badges
-            // under the new base's header (policies/ux-responsiveness.md). The tree
-            // itself still refreshes behind the switch.
-            for entry in &mut self.entries {
-                entry.annotation = self.changed.get(&entry.path).cloned();
-            }
-            self.rebuild_file_rows();
-            self.request_world_refresh(false, false);
-        }
-        Ok(())
+        self.file_cursor = 0;
+        self.expanded_folds.clear();
+        self.reset_diff_view();
+        // The changed set rebuilds before the frame, so the list never shows another base's
+        // files under the new base's label (specs/tui.md).
+        self.reload()
     }
 
     /// Queue a PR refresh, merging into any request already pending: the stronger kind
@@ -1908,10 +1582,9 @@ impl App {
         self.pr_pending = self.pr_pending.max(Some(kind));
     }
 
-    /// Switch to `tab`, saving the active tab's navigator and read-pane state and restoring the
-    /// target's. Each tab keeps its own opened file and scroll, so returning to a tab lands
-    /// exactly where you left it (specs/tui.md). The switch frame paints the restored state as
-    /// it was; a world refresh lands behind it — stale until it lands, never wrong
+    /// Switch to `tab`. `Changes` keeps its opened file and scroll while a forge tab shows, so
+    /// returning lands exactly where you left it (specs/tui.md). The return frame paints that
+    /// state as it was; a world refresh lands behind it — stale until it lands, never wrong
     /// (specs/overview.md Continuity). A no-op on the active tab or while composing; focus
     /// stays on the same side.
     pub fn set_tab(&mut self, tab: Tab) -> Result<()> {
@@ -1920,23 +1593,17 @@ impl App {
             return Ok(());
         }
         self.tab = tab;
-        // Entering the PR tab leaves the file tabs frozen in place and fetches the PR. A
+        // Entering the PR tab leaves `Changes` frozen in place and fetches the PR. A
         // `loading` frame draws before the blocking fetch the event loop services, and a
         // re-entry keeps the last snapshot on screen while it refetches.
         if tab.is_forge() {
             self.request_pr_refresh(RefreshKind::Ambient);
             return Ok(());
         }
-        // Entering a file tab: bring its state into the diff fields if the other file tab holds
-        // them (a Changes↔AllFiles switch, or a return from PR onto the stashed tab).
-        if self.active_file_tab != tab {
-            self.swap_active_with_stash();
-            self.active_file_tab = tab;
-        }
-        // A first visit has no stash to paint: refreshing behind would show an empty tree
+        // A first visit has nothing to paint: refreshing behind would show an empty tree
         // under a live changed-count, a header/body disagreement
         // (policies/ux-responsiveness.md). Load it before the frame instead; every return
-        // visit paints its stash instantly and refreshes behind it. The visited marker,
+        // visit paints its frozen state instantly and refreshes behind it. The visited marker,
         // not emptiness — a clean repo's `Changes` tab is legitimately empty.
         if self.tab_visited {
             self.request_world_refresh(false, true);
@@ -1999,7 +1666,7 @@ impl App {
         self.pr_notice = None;
         // Follow the selected row by identity, not index, so a refresh that inserts a newer
         // comment (the list is newest-first) keeps the cursor on the same one and leaves the read
-        // scroll intact — only a vanished or absent selection resets it (mirrors the file tabs'
+        // scroll intact — only a vanished or absent selection resets it (mirrors `Changes`'
         // poll-preservation, specs/pr-tab.md). The pinned description row's identity is itself:
         // it survives while the new snapshot still has a description, and an emptied one
         // vanishes like a deleted comment.
@@ -2257,30 +1924,6 @@ impl App {
         }
     }
 
-    /// Exchange the active per-tab fields with the inactive tab's saved snapshot. Every per-tab
-    /// field on `App` must be swapped here — a new per-tab field left out silently bleeds one
-    /// tab's selection or scroll into the other.
-    fn swap_active_with_stash(&mut self) {
-        std::mem::swap(&mut self.entries, &mut self.stash.entries);
-        std::mem::swap(&mut self.file_rows, &mut self.stash.file_rows);
-        std::mem::swap(&mut self.file_cursor, &mut self.stash.file_cursor);
-        std::mem::swap(&mut self.file_scroll, &mut self.stash.file_scroll);
-        std::mem::swap(&mut self.toggled_dirs, &mut self.stash.toggled_dirs);
-        std::mem::swap(&mut self.diff, &mut self.stash.diff);
-        std::mem::swap(&mut self.visible, &mut self.stash.visible);
-        std::mem::swap(&mut self.expanded_folds, &mut self.stash.expanded_folds);
-        std::mem::swap(&mut self.diff_path, &mut self.stash.diff_path);
-        std::mem::swap(&mut self.diff_cursor, &mut self.stash.diff_cursor);
-        std::mem::swap(&mut self.diff_scroll, &mut self.stash.diff_scroll);
-        std::mem::swap(&mut self.h_scroll, &mut self.stash.h_scroll);
-        std::mem::swap(&mut self.select_anchor, &mut self.stash.select_anchor);
-        std::mem::swap(&mut self.preview, &mut self.stash.preview);
-        std::mem::swap(&mut self.preview_scroll, &mut self.stash.preview_scroll);
-        std::mem::swap(&mut self.preview_text, &mut self.stash.preview_text);
-        std::mem::swap(&mut self.preview_scrolled, &mut self.stash.preview_scrolled);
-        std::mem::swap(&mut self.tab_visited, &mut self.stash.visited);
-    }
-
     /// While the navigator is hidden, `tab` shows it and focuses it instead of flipping
     /// between panes (specs/input.md).
     pub fn toggle_focus(&mut self) {
@@ -2380,8 +2023,8 @@ impl App {
 
     /// Move the diff cursor to the nearest hunk's first changed row past it. With no hunk left
     /// this way, the first press arms the crossing and the second one takes it, so a held key
-    /// stops at each file. Only `Changes` paints change rows — `All files` is all context, and
-    /// the preview has no cursor — so a step anywhere else has no target (`specs/input.md`).
+    /// stops at each file. Only `Changes` paints change rows, and the preview has no cursor,
+    /// so a step anywhere else has no target (`specs/input.md`).
     fn step_hunk(&mut self, forward: bool) {
         // Any step drops the standing arm. A step the other way is not the repeat it waits for.
         let armed = self.armed_cross.take().filter(|a| a.forward == forward);
@@ -2433,12 +2076,12 @@ impl App {
             // Cross over the files git already counted as having no lines — a binary, a pure
             // rename — without reading them. The reload's `--numstat` knows (`file_list.rs`), so
             // a keystroke that only passes a file by spends no git on it.
-            if entry.annotation.as_ref().is_some_and(|a| a.additions + a.deletions == 0) {
+            if entry.annotation.additions + entry.annotation.deletions == 0 {
                 continue;
             }
             // An over-budget file renders a notice, so it holds no hunk either. Check the size
-            // before reading, as `set_file_view` does: pulling a vendored bundle in whole would
-            // spike the UI thread for a file the reviewer only crosses over.
+            // before reading: pulling a vendored bundle in whole would spike the UI thread for a
+            // file the reviewer only crosses over.
             if std::fs::metadata(self.repo.join(&entry.path))
                 .is_ok_and(|m| crate::diff::over_byte_budget(m.len() as usize))
             {
@@ -2480,8 +2123,8 @@ impl App {
 
     /// The `esc` ladder in `Normal` mode: peel exactly one layer per press — a live selection, then
     /// an armed crossing, then the footer expansion (`specs/input.md`). The selection and crossing
-    /// are file-tab place state, frozen in place while `PR` is active, so `esc` on `PR` closes only
-    /// the expansion and never disturbs the file tab the reviewer will return to (`overview.md`
+    /// are `Changes` place state, frozen in place while `PR` is active, so `esc` on `PR` closes only
+    /// the expansion and never disturbs the tab the reviewer will return to (`overview.md`
     /// Continuity).
     pub fn escape(&mut self) {
         if !self.tab.is_forge() {
@@ -2546,27 +2189,20 @@ impl App {
     /// stays on the directory row (still present, now toggled).
     fn toggle_dir(&mut self) {
         let Some(path) = self.dir_under_cursor() else { return };
-        // Flip its membership in the toggled set (toggled = flipped from the tab's default).
-        if !self.toggled_dirs.remove(&path) {
-            self.toggled_dirs.insert(path);
+        // Flip its membership in the toggled set (toggled = collapsed).
+        if !self.collapsed_dirs.remove(&path) {
+            self.collapsed_dirs.insert(path);
         }
         self.apply_dir_change();
     }
 
-    /// Whether directory `path` is currently expanded under the active tab's resting state.
-    fn dir_expanded(&self, path: &str) -> bool {
-        self.default_expanded() ^ self.toggled_dirs.contains(path)
-    }
-
     /// Force directory `path` to `want` (expanded or collapsed); returns whether it changed.
     fn set_dir_expanded(&mut self, path: &str, want: bool) -> bool {
-        if self.dir_expanded(path) == want {
-            return false;
+        if want {
+            self.collapsed_dirs.remove(path)
+        } else {
+            self.collapsed_dirs.insert(path.into())
         }
-        if !self.toggled_dirs.remove(path) {
-            self.toggled_dirs.insert(path.to_string());
-        }
-        true
     }
 
     /// Whether the cursor is on a directory row in the focused file list — the rows `←`/`→`
@@ -2614,13 +2250,6 @@ impl App {
 
     /// Rebuild the tree after a directory's expansion changed, keeping the cursor in range.
     fn apply_dir_change(&mut self) {
-        // In `All files`, expanding an ignored directory loads its children lazily, so the
-        // entry set is rebuilt before the rows (file-list.md). Other tabs just re-flatten.
-        if self.tab == Tab::AllFiles
-            && let Ok(entries) = crate::world::all_files_entries(&self.world_input(), &self.changed)
-        {
-            self.entries = entries;
-        }
         self.rebuild_file_rows();
         self.file_cursor = self.file_cursor.min(self.file_rows.len().saturating_sub(1));
         self.reveal_files = true; // the row may have moved off-screen; pull it back
@@ -2739,9 +2368,7 @@ impl App {
             && let Some(e) = self.entries.iter().find(|e| e.path == file).cloned()
         {
             self.reset_diff_view();
-            // Open it in the active tab's view — the File view on `All files`, not a diff — so
-            // the pane and the comment's anchor kind stay consistent with the tab.
-            self.open_path_in_tab(e.path, e.previous_path);
+            self.set_diff(e.path, e.previous_path);
             if let Some(fi) = self.file_row_of_path(&file) {
                 self.file_cursor = fi;
             }
@@ -2770,17 +2397,16 @@ impl App {
     }
 
     // --- text editing: a character caret into the active field ----------------------------
-    // The comment editor and the search input share one control set (specs/input.md,
-    // specs/search.md). `caret` is a char index in `0..=text.chars().count()`. Edits
+    // The comment editor and the query fields share one control set (specs/input.md).
+    // `caret` is a char index in `0..=text.chars().count()`. Edits
     // round-trip through a `Vec<char>` (both fields are short), so every op is
     // character-wise and multi-byte safe.
 
-    /// The mode's editable text and caret: the comment draft while composing, the search
-    /// query, the find query, the base picker's filter, nothing otherwise.
+    /// The mode's editable text and caret: the comment draft while composing, the find
+    /// query, the base picker's filter, nothing otherwise.
     fn active_field(&mut self) -> Option<(&mut String, &mut usize)> {
         match self.mode {
             Mode::Composing { .. } => Some((&mut self.input, &mut self.caret)),
-            Mode::Search => self.search.as_mut().map(|s| (&mut s.query, &mut s.caret)),
             Mode::Find => self.find.as_mut().map(|f| (&mut f.query, &mut f.caret)),
             Mode::BasePick => self.base_picker.as_mut().map(|b| (&mut b.query, &mut b.caret)),
             Mode::Normal | Mode::List | Mode::Picker => None,
@@ -2790,10 +2416,8 @@ impl App {
     /// Run a character-wise edit on the active field: collect it into a `Vec<char>` with
     /// the caret as an in-range index, hand both to `f`, then reassemble and re-clamp the
     /// caret. Every mutating `input_*` op routes through here, so the guard / collect /
-    /// reassemble lives once instead of seven times. A changed search query re-queries
-    /// (specs/search.md).
+    /// reassemble lives once instead of seven times.
     fn edit_input(&mut self, f: impl FnOnce(&mut Vec<char>, &mut usize)) {
-        let searching = self.mode == Mode::Search;
         // The highlighted branch's own row, read before the filter narrows under it.
         let highlighted =
             self.base_picker.as_ref().and_then(|bp| bp.filtered().get(bp.cursor).copied());
@@ -2805,9 +2429,6 @@ impl App {
         let edited: String = v.into_iter().collect();
         let changed = *text != edited;
         *text = edited;
-        if searching && changed {
-            self.search_dirty = true;
-        }
         if changed && self.mode == Mode::BasePick {
             self.refilter_base_picker(highlighted);
         }
@@ -2840,13 +2461,13 @@ impl App {
     }
 
     /// Insert pasted `text` at the caret as one unit, normalizing `\r\n`/`\r` to `\n`. The
-    /// single-line search and find queries take a newline as a space (specs/search.md); the
+    /// single-line find query takes a newline as a space (specs/find-in-file.md); the
     /// base picker's filter drops it, so a branch name pasted with the newline it was copied
     /// with still matches its branch (specs/input.md).
     pub fn input_paste(&mut self, text: &str) {
         let mut norm = text.replace("\r\n", "\n").replace('\r', "\n");
         match self.mode {
-            Mode::Search | Mode::Find => norm = norm.replace('\n', " "),
+            Mode::Find => norm = norm.replace('\n', " "),
             // No branch name holds a newline, so a name pasted with the one it was copied
             // with filters as the bare name rather than matching nothing.
             Mode::BasePick => norm.retain(|c| c != '\n'),
@@ -2993,10 +2614,7 @@ impl App {
         // selection — they diverge if the list shifts under a comment in progress.
         let file = self.diff_path.clone()?;
         let (side, start, end, lines) = self.selection_anchor()?;
-        // The File view marks every comment as content-anchored, so it ages by file existence,
-        // not changeset membership (specs/review-model.md).
-        let diff_anchored = self.diff.view == View::Diff;
-        Some(Comment { file, side, start, end, lines, text, diff_anchored })
+        Some(Comment { file, side, start, end, lines, text })
     }
 
     /// The `path:line` the composer is anchored to (selection for a new comment,
@@ -3007,33 +2625,12 @@ impl App {
             Mode::Composing { editing: None } => {
                 let file = self.diff_path.clone()?;
                 let (side, start, end, _) = self.selection_anchor()?;
-                // Only `location()` is read here, which ignores `diff_anchored`.
-                let c = Comment {
-                    file,
-                    side,
-                    start,
-                    end,
-                    lines: String::new(),
-                    text: String::new(),
-                    diff_anchored: true,
-                };
+                let c =
+                    Comment { file, side, start, end, lines: String::new(), text: String::new() };
                 Some(c.location())
             }
-            Mode::Normal
-            | Mode::List
-            | Mode::Picker
-            | Mode::BasePick
-            | Mode::Search
-            | Mode::Find => None,
+            Mode::Normal | Mode::List | Mode::Picker | Mode::BasePick | Mode::Find => None,
         }
-    }
-
-    /// Whether comment `c` anchors to the pane's current view — a diff comment to the Diff view,
-    /// a content comment to the File view. Stops a comment of one kind rendering on, or being
-    /// acted on at, an unrelated line in the other tab's view of the same file (the diff's line
-    /// numbering and the File view's worktree line numbering differ; specs/review-model.md).
-    fn comment_in_view(&self, c: &Comment) -> bool {
-        c.diff_anchored == (self.diff.view == View::Diff)
     }
 
     /// Row indices on the open diff's file that a comment anchors to.
@@ -3044,11 +2641,7 @@ impl App {
         self.visible
             .iter()
             .enumerate()
-            .filter(|(_, row)| {
-                self.store
-                    .iter()
-                    .any(|c| c.file == file && self.comment_in_view(c) && line_in(c, row))
-            })
+            .filter(|(_, row)| self.store.iter().any(|c| c.file == file && line_in(c, row)))
             .map(|(i, _)| i)
             .collect()
     }
@@ -3061,7 +2654,6 @@ impl App {
         let Some(file) = self.diff_path.as_deref() else { return cards };
         for (ci, c) in self.store.iter().enumerate() {
             if c.file == file
-                && self.comment_in_view(c)
                 && let Some(last) = self.visible.iter().rposition(|row| line_in(c, row))
             {
                 cards[last].push(ci);
@@ -3083,7 +2675,7 @@ impl App {
     fn comment_under_cursor(&self) -> Option<usize> {
         let file = self.diff_path.as_deref()?;
         let row = self.visible.get(self.diff_cursor)?;
-        self.store.iter().position(|c| c.file == file && self.comment_in_view(c) && line_in(c, row))
+        self.store.iter().position(|c| c.file == file && line_in(c, row))
     }
 
     pub fn delete_comment(&mut self) {
@@ -3127,41 +2719,11 @@ impl App {
         }
     }
 
-    // --- Search overlay (specs/search.md) ------------------------------------------------
-
-    /// The active scope's annotation for `path` — the search overlay's file rows wear the
-    /// same marker and stats as the file list (specs/search.md).
-    pub(crate) fn changed_annotation(&self, path: &str) -> Option<&Annotation> {
-        self.changed.get(path)
-    }
-
-    /// `/`: open the search screen, from any tab, from either pane (specs/search.md).
-    pub fn open_search(&mut self) {
-        // A navigator-divider drag held from the review view must not become a search-split
-        // resize: cancel it so its remaining drag events are consumed, not acted on — the
-        // search divider only drags a gesture it started itself (specs/input.md).
-        self.cancel_divider_drag();
-        self.search = Some(SearchOverlay::new());
-        self.mode = Mode::Search;
-        // The empty query runs too: the warm engine answers it with its frecency-ranked
-        // files, so the screen is useful before the first keystroke.
-        self.search_dirty = true;
-    }
-
-    /// `esc`: drop the screen whole, place untouched (specs/search.md).
-    pub fn close_search(&mut self) {
-        if self.mode == Mode::Search {
-            self.mode = Mode::Normal;
-        }
-        self.search = None;
-        self.search_dirty = false;
-    }
-
-    /// Whether the find band opens: the read pane shows searchable content rows — a file tab, not
+    /// Whether the find band opens: the read pane shows searchable content rows — `Changes`, not
     /// the markdown preview, at least one content row. A notice (binary, too large) and an empty
     /// file carry no content rows, so `any(is_content)` excludes them (specs/find-in-file.md).
     pub fn find_available(&self) -> bool {
-        self.tab.is_file_tab() && !self.preview && self.visible.iter().any(Row::is_content)
+        self.tab == Tab::Changes && !self.preview && self.visible.iter().any(Row::is_content)
     }
 
     /// `ctrl+f`: open the find band over the read pane, inert with nothing to search. Opening is a
@@ -3298,181 +2860,6 @@ impl App {
         Some((on_match.then_some(cursor_rank + 1), hits.len()))
     }
 
-    /// `tab`: flip the mode, keeping the query. The held results paint at once and the
-    /// pick lands on the new mode's first result row (specs/search.md).
-    pub fn search_flip(&mut self) {
-        if let Some(s) = self.search.as_mut() {
-            s.search_mode = match s.search_mode {
-                SearchMode::Files => SearchMode::Code,
-                SearchMode::Code => SearchMode::Files,
-            };
-            s.pick = 0;
-            s.scroll.set(0);
-        }
-    }
-
-    /// `↓`/`↑`, `ctrl+n`/`p`: move the pick by `delta`, only while `Ready` (specs/search.md).
-    pub fn search_move(&mut self, delta: isize) {
-        // Off `Ready` the screen paints a message, not rows, so there is nothing to
-        // move onto — the same guard `search_open_pick` and `build_search_preview` uphold.
-        if let Some(s) = self.search.as_mut()
-            && s.phase == SearchPhase::Ready
-        {
-            s.pick = step(s.pick, delta, s.picks());
-        }
-    }
-
-    /// Land one completion. The dispatcher already dropped stale generations; while a
-    /// query is in flight the previous results stay painted. A landed set resets the pick
-    /// to the first result row (specs/search.md).
-    pub fn apply_search_completion(&mut self, completion: crate::search::SearchCompletion) {
-        use crate::search::SearchOutcome;
-        let Some(s) = self.search.as_mut() else { return };
-        match completion.outcome {
-            SearchOutcome::Ready(results) => {
-                s.results = results;
-                s.phase = SearchPhase::Ready;
-                s.pick = 0;
-                s.scroll.set(0);
-            }
-            SearchOutcome::Indexing => s.phase = SearchPhase::Indexing,
-            SearchOutcome::Failed(e) => {
-                s.phase = SearchPhase::Error(e);
-                // Drop the last preview so the pane falls back to its notice — a stale file
-                // under a red error reads as a result (specs/search.md).
-                s.preview = None;
-            }
-        }
-    }
-
-    /// Rebuild the picked result's preview when it no longer matches the pick — idempotent,
-    /// so the event loop can call it every settled frame. It runs only with no input pending,
-    /// so a pick sweep never waits on it (specs/search.md Preview).
-    pub fn build_search_preview(&mut self) {
-        let Some(s) = self.search.as_ref() else { return };
-        // The pick's target, or `None` when nothing is pickable (off `Ready`, or empty).
-        let picked = (s.phase == SearchPhase::Ready).then(|| s.picked()).flatten();
-        // Skip when the settled preview already shows this pick — the compare is by reference,
-        // so the common no-change frame allocates nothing. A pick move or a landed set makes it
-        // differ (rebuild); a poll refreshes the diff in place without moving the pick (skip).
-        let shows_pick = match (s.preview.as_ref(), picked.as_ref()) {
-            (None, None) => true,
-            (Some(pv), Some(PickedResult::File(f))) => pv.hit.is_none() && pv.path == f.path,
-            (Some(pv), Some(PickedResult::Code(c))) => {
-                pv.path == c.path
-                    && pv.hit.as_ref().is_some_and(|(l, sp)| *l == c.line && sp == &c.spans)
-            }
-            _ => false,
-        };
-        if shows_pick {
-            return;
-        }
-        let target = picked.map(|picked| match picked {
-            PickedResult::File(f) => (f.path.clone(), None),
-            PickedResult::Code(c) => (c.path.clone(), Some((c.line, c.spans.clone()))),
-        });
-        let Some((path, hit)) = target else {
-            if let Some(s) = self.search.as_mut() {
-                s.preview = None;
-            }
-            return;
-        };
-        // A deleted file reads empty and previews empty; an over-budget file previews as the
-        // File view's notice (specs/search.md).
-        let diff = self.file_view(&path).0;
-        if let Some(s) = self.search.as_mut() {
-            s.preview = Some(SearchPreview {
-                path,
-                diff,
-                hit,
-                scroll: std::cell::Cell::new(0),
-                center: std::cell::Cell::new(true),
-            });
-        }
-    }
-
-    /// `PageUp`/`PageDown`: scroll the settled preview. The renderer clamps; the next
-    /// pick re-centers (specs/search.md).
-    pub fn scroll_search_preview(&mut self, delta: isize) {
-        if let Some(p) = self.search.as_ref().and_then(|s| s.preview.as_ref()) {
-            p.center.set(false);
-            p.scroll.set(p.scroll.get().saturating_add_signed(delta));
-        }
-    }
-
-    /// A landed poll's preview reconcile: rebuild the previewed file in place, keeping the
-    /// scroll. The renderer clamps the scroll and bands the hit only while its line still
-    /// exists (specs/search.md, `overview.md` Continuity).
-    pub fn refresh_search_preview(&mut self) {
-        let Some(path) =
-            self.search.as_ref().and_then(|s| s.preview.as_ref()).map(|p| p.path.clone())
-        else {
-            return;
-        };
-        let diff = self.file_view(&path).0;
-        if let Some(pv) = self.search.as_mut().and_then(|s| s.preview.as_mut()) {
-            pv.diff = diff;
-        }
-    }
-
-    /// `enter`: open the picked result in `All files` whatever tab the search left — the
-    /// file in the read pane, the navigator selection onto it, ancestors expanded; a code
-    /// pick lands the cursor on its line, clamped into the file's current length. A
-    /// vanished path opens nothing and the screen stays (specs/search.md).
-    pub fn search_open_pick(&mut self) -> Result<()> {
-        let Some(s) = self.search.as_ref() else { return Ok(()) };
-        // Off `Ready`, the painted screen shows no rows — held results are stale and
-        // invisible, so nothing opens (specs/search.md).
-        if s.phase != SearchPhase::Ready {
-            return Ok(());
-        }
-        let (path, line) = match s.picked() {
-            Some(PickedResult::File(f)) => (f.path.clone(), None),
-            Some(PickedResult::Code(c)) => (c.path.clone(), Some(c.line)),
-            None => return Ok(()),
-        };
-        if !self.repo.join(&path).is_file() {
-            return Ok(());
-        }
-        self.close_search();
-        // Opening is a deliberate leave: the origin tab stashes its place on the switch,
-        // kept for `1`/`2`/`3` (specs/search.md).
-        if self.tab != Tab::AllFiles {
-            self.set_tab(Tab::AllFiles)?;
-        }
-        // The pick feeds the engine's frecency store, so ranking improves with use.
-        self.search_track = Some(path.clone());
-        let mut expanded = false;
-        let mut dir = path.as_str();
-        while let Some((parent, _)) = dir.rsplit_once('/') {
-            expanded |= self.set_dir_expanded(parent, true);
-            dir = parent;
-        }
-        if expanded {
-            // Re-flatten the rows only: the picked file is already in `entries` (search
-            // never returns an ignored path), so the worktree walk `apply_dir_change`
-            // runs for lazy ignored children would block the pick for nothing
-            // (policies/ux-responsiveness.md).
-            self.rebuild_file_rows();
-        }
-        self.reset_diff_view();
-        // A same-file pick must land on the hit line in source, not behind an open
-        // markdown preview (`set_file_view` keeps the choice for a same-path open).
-        self.preview = false;
-        self.set_file_view(&path);
-        if let Some(fi) = self.file_row_of_path(&path) {
-            self.file_cursor = fi;
-            self.reveal_files = true;
-        }
-        self.focus = Focus::Diff;
-        if let Some(line) = line {
-            let last = self.visible.len().saturating_sub(1);
-            self.diff_cursor = (line.saturating_sub(1) as usize).min(last);
-        }
-        self.reveal_diff = true;
-        Ok(())
-    }
-
     pub fn open_list(&mut self) {
         if !self.store.is_empty() {
             self.list_cursor = 0;
@@ -3517,25 +2904,6 @@ impl App {
             Mode::BasePick => {
                 return vec![(A::PickBaseRow, Primary), (A::ClosePicker, Do), (A::MoveBaseRow, Do)];
             }
-            Mode::Search => {
-                // With nothing pickable — warming, errored, or no matches — only the
-                // mode flip and the exit are offered, so the bar never lists a key that
-                // would not work (specs/search.md).
-                let pickable = self
-                    .search
-                    .as_ref()
-                    .is_some_and(|s| s.phase == SearchPhase::Ready && s.picks() > 0);
-                return if pickable {
-                    vec![
-                        (A::FlipSearchMode, Primary),
-                        (A::PickResult, Do),
-                        (A::OpenResult, Do),
-                        (A::CloseSearch, Do),
-                    ]
-                } else {
-                    vec![(A::FlipSearchMode, Primary), (A::CloseSearch, Do)]
-                };
-            }
             Mode::Find => {
                 // The steps show only with a match to step to, so the bar never lists a key that
                 // would not work (specs/find-in-file.md).
@@ -3558,7 +2926,6 @@ impl App {
             if self.pr_snapshot().is_some() {
                 out.push((A::OpenPr, Primary));
             }
-            out.push((A::Search, Go));
             out.push((A::TogglePane, Go));
             out.push((A::NavigatorPosition, Go));
             out.push((A::Tabs, Go));
@@ -3657,7 +3024,6 @@ impl App {
         if self.base_pick_available() && !out.iter().any(|&(a, _)| a == A::BasePick) {
             out.push((A::BasePick, Go));
         }
-        out.push((A::Search, Go));
         // In-file find shows wherever the read pane has content to search (specs/find-in-file.md).
         if self.find_available() {
             out.push((A::Find, Go));
@@ -3784,11 +3150,11 @@ impl App {
         self.export_to_agent(&agent);
     }
 
-    /// Whether the base picker can open here: a file tab, the `branch` scope, and no
+    /// Whether the base picker can open here: `Changes`, the `branch` scope, and no
     /// `--base` flag (`specs/input.md` Base picker).
     #[must_use]
     pub fn base_pick_available(&self) -> bool {
-        self.tab.is_file_tab() && self.scope == Scope::Branch && self.base.is_none()
+        self.tab == Tab::Changes && self.scope == Scope::Branch && self.base.is_none()
     }
 
     /// Open the base picker: one row per branch name, the open PR's target starred first,
@@ -3928,8 +3294,7 @@ impl App {
         delivered
     }
 
-    /// The number of files changed in the active scope — the header count, the same on both
-    /// tabs (specs/tui.md), since `All files` lists the worktree but counts the changeset.
+    /// The number of files changed in the active scope — the header count (specs/tui.md).
     pub fn changed_count(&self) -> usize {
         self.changed.len()
     }
@@ -3942,15 +3307,10 @@ impl App {
         })
     }
 
-    /// Whether a comment's anchor may have moved. A diff comment is stale once its file leaves
-    /// the changeset; a File-view (content) comment only once its file is gone from the
-    /// worktree, since it was never tied to the changeset (specs/review-model.md).
+    /// Whether a comment's anchor may have moved: its file left the changeset
+    /// (specs/review-model.md).
     pub fn is_stale(&self, c: &Comment) -> bool {
-        if c.diff_anchored {
-            !self.changed.contains_key(&c.file)
-        } else {
-            !self.repo.join(&c.file).exists()
-        }
+        !self.changed.contains_key(&c.file)
     }
 
     fn clamp_list_cursor(&mut self) {
@@ -4227,7 +3587,6 @@ mod tests {
             end: 1,
             lines: "+line".to_string(),
             text: "saved".to_string(),
-            diff_anchored: true,
         });
         old.mode = Mode::Composing { editing: None };
         old.resume_list = true;
@@ -4270,7 +3629,7 @@ mod tests {
     fn config_recovery_carries_a_pending_world_request() {
         // A tab switch requested its refresh, then recovery landed first: the carried flags
         // are what make the recovered app dispatch that refresh instead of keeping the
-        // stale stashed frame until the next poll.
+        // stale frozen frame until the next poll.
         let mut old = App::blocked(PathBuf::from("."), Scope::Uncommitted, None);
         old.request_world_refresh(true, true);
         let mut recovered = App::new(PathBuf::from("."), Scope::Uncommitted, None);
@@ -4318,7 +3677,7 @@ mod tests {
 
         assert!(app.reload().unwrap_err().to_string().contains("bad config"));
         assert!(app.set_scope(Scope::Branch).is_err());
-        assert!(app.set_tab(super::Tab::AllFiles).is_err());
+        assert!(app.set_tab(super::Tab::Pr).is_err());
         assert!(app.move_cursor(1).is_err());
         assert!(app.select_file(0).is_err());
     }

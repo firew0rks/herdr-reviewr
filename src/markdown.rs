@@ -1,4 +1,4 @@
-//! Markdown rendering: one renderer behind the PR tab's bodies and the File view's preview.
+//! Markdown rendering: one renderer behind the PR tab's bodies and the diff's markdown preview.
 //!
 //! See `specs/markdown.md`. Parses with `pulldown-cmark` and emits theme-styled,
 //! pre-wrapped `ratatui` lines. Fenced code goes through the shared [`Highlighter`], so

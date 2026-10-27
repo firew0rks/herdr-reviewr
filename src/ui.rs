@@ -43,19 +43,6 @@ pub fn render(frame: &mut Frame, app: &App) {
     }
     let p = panes(area, app);
 
-    // The search screen replaces the body; the header and footer chrome stay
-    // (specs/search.md).
-    if app.mode == Mode::Search {
-        if app.tab.is_forge() {
-            render_pr_header(frame, app, p.tab);
-        } else {
-            render_tab_bar(frame, app, p.tab);
-        }
-        render_search(frame, app, p.body);
-        render_footer(frame, app, p.status);
-        return;
-    }
-
     if app.tab == Tab::Issues {
         render_pr_header(frame, app, p.tab);
         render_issues_read(frame, app, p.diff);
@@ -82,7 +69,7 @@ pub fn render(frame: &mut Frame, app: &App) {
         Mode::List => Some(render_comments_list),
         Mode::Picker => Some(render_agent_picker),
         Mode::BasePick => Some(render_base_picker),
-        Mode::Normal | Mode::Composing { .. } | Mode::Search | Mode::Find => None,
+        Mode::Normal | Mode::Composing { .. } | Mode::Find => None,
     };
     if let Some(render_popup) = popup {
         scrim_behind(frame, app, area);
@@ -145,7 +132,7 @@ fn panes(area: Rect, app: &App) -> Panes {
 
 /// Split `axis_len` cells by `pct`, honoring the shared minimum-pane rule: a three-cell
 /// floor for each side once six cells exist, an even split below (`specs/tui.md`). The one
-/// home for the review split and the search split, so they never disagree on the minimum.
+/// home for the review split's minimum.
 pub(crate) fn split_axis(axis_len: u16, pct: u16) -> u16 {
     let mut len = (u32::from(axis_len) * u32::from(pct) / 100) as u16;
     if axis_len >= 6 {
@@ -483,13 +470,12 @@ pub fn hit_header(area: Rect, app: &App, keymap: &Keymap, col: u16, row: u16) ->
     None
 }
 
-/// The four tabs and their labels, left to right, each led by its `tab-*` action's hint key
+/// The three tabs and their labels, left to right, each led by its `tab-*` action's hint key
 /// (`specs/input.md`). Column math uses display width, since a bound hint key can be wide.
-fn tab_labels(keymap: &Keymap) -> [(Tab, String); 4] {
+fn tab_labels(keymap: &Keymap) -> [(Tab, String); 3] {
     use crate::keymap::Action as K;
     [
         (Tab::Changes, format!("{} Changes", keymap.hint(K::TabChanges))),
-        (Tab::AllFiles, format!("{} Files", keymap.hint(K::TabAllFiles))),
         (Tab::Pr, format!("{} PR", keymap.hint(K::TabPr))),
         (Tab::Issues, format!("{} Issues", keymap.hint(K::TabIssues))),
     ]
@@ -605,8 +591,8 @@ fn tab_bar_spans(app: &App) -> Vec<Span<'static>> {
 /// The columns the strip may claim on a header of `width`.
 ///
 /// Each header has one element that outlives everything else: the PR's identity chip on a
-/// forge tab (`specs/pr-tab.md`), the scope chip on a file tab (`specs/tui.md`). The strip
-/// yields to it. Without this a fourth tab pushes that element off a narrow bar entirely,
+/// forge tab (`specs/pr-tab.md`), the scope chip on `Changes` (`specs/tui.md`). The strip
+/// yields to it. Without this a third tab pushes that element off a narrow bar entirely,
 /// which is the one thing the narrow-bar rule promises will not happen.
 fn tab_strip_budget(app: &App, width: u16) -> usize {
     let reserved = if app.tab.is_forge() {
@@ -720,11 +706,7 @@ fn render_file_list(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(block, area);
 
     if app.file_rows.is_empty() {
-        let msg = match app.tab {
-            Tab::AllFiles => "no files",
-            Tab::Changes if app.awaiting_turn() => app.turn_wait_message(),
-            _ => "no changes",
-        };
+        let msg = if app.awaiting_turn() { app.turn_wait_message() } else { "no changes" };
         frame.render_widget(dim_paragraph(msg, p), inner);
         return;
     }
@@ -744,95 +726,52 @@ fn render_file_list(frame: &mut Frame, app: &App, area: Rect) {
             match &row.kind {
                 RowKind::Dir { expanded, .. } => {
                     let arrow = if *expanded { "▾ " } else { "▸ " };
-                    // A git-ignored directory recedes into a dim, unbolded row (file-list.md).
-                    let name_style = if row.ignored {
-                        Style::default().fg(p.overlay0)
-                    } else {
-                        Style::default().fg(p.subtext0).add_modifier(Modifier::BOLD)
-                    };
+                    let name_style = Style::default().fg(p.subtext0).add_modifier(Modifier::BOLD);
                     let spans = vec![
                         Span::styled(format!("{indent}{arrow}"), Style::default().fg(p.overlay0)),
                         Span::styled(format!("{}/", row.name), name_style),
                     ];
                     selectable_row(p, spans, width, fill)
                 }
-                RowKind::File { annotation, .. } => file_row_item(
-                    &FileRowSpec {
-                        indent: &indent,
-                        annotation: annotation.as_ref(),
-                        name: &row.name,
-                        ignored: row.ignored,
-                        emphasis: &[],
-                    },
-                    width,
-                    fill,
-                    p,
-                ),
+                RowKind::File { annotation, .. } => {
+                    file_row_item(&indent, annotation, &row.name, width, fill, p)
+                }
             }
         })
         .collect();
     frame.render_widget(List::new(items), inner);
 }
 
-/// The fields [`file_row_item`] renders. `emphasis` byte ranges into `name` wear the match
-/// highlight (the search screen's matched characters); a head-elided name remaps them onto the
-/// shown text, dropping only a span that falls entirely in the elided head, which has nowhere
-/// to show (specs/search.md).
-struct FileRowSpec<'a> {
-    indent: &'a str,
-    annotation: Option<&'a Annotation>,
-    name: &'a str,
-    ignored: bool,
-    emphasis: &'a [(u32, u32)],
-}
-
 /// A file row: `<indent><marker> <name> <stats>` — the marker colored by kind, the basename
 /// bright with its parent directories dimmed, and the `+a −d` stats right-aligned against the
-/// pane edge. A name too wide for the row keeps its tail behind a leading `…/`. An unannotated
-/// row (an unchanged `All files` file) drops the marker and stats, showing just the name.
+/// pane edge. A name too wide for the row keeps its tail behind a leading `…/`.
 fn file_row_item(
-    row: &FileRowSpec<'_>,
+    indent: &str,
+    annotation: &Annotation,
+    name: &str,
     width: usize,
     fill: Option<Color>,
     p: &Palette,
 ) -> ListItem<'static> {
-    let FileRowSpec { indent, annotation, name, ignored, emphasis } = *row;
-    let marker = annotation.map_or(String::new(), |a| format!("{} ", a.change.marker()));
-    let (additions, deletions) = annotation.map_or((0, 0), |a| (a.additions, a.deletions));
+    let marker = format!("{} ", annotation.change.marker());
+    let (additions, deletions) = (annotation.additions, annotation.deletions);
     let stats = stats_str(additions, deletions);
     let gap = if stats.is_empty() { 0 } else { 2 };
     let fixed = indent.width() + marker.width() + stats.width() + gap;
     let shown = elide_head(name, width.saturating_sub(fixed).max(1));
 
-    let mut spans = vec![Span::styled(indent.to_string(), text_style(p))];
-    if let Some(a) = annotation {
-        spans.push(Span::styled(marker, Style::default().fg(kind_color(p, a.change.marker()))));
+    let marker_style = Style::default().fg(kind_color(p, annotation.change.marker()));
+    let mut spans =
+        vec![Span::styled(indent.to_string(), text_style(p)), Span::styled(marker, marker_style)];
+    // Dim the parent directories of a collapsed-chain name, keep the basename bright.
+    let (dim, base) = match shown.rfind('/') {
+        Some(s) => (&shown[..=s], &shown[s + 1..]),
+        None => ("", shown.as_str()),
+    };
+    if !dim.is_empty() {
+        spans.push(Span::styled(dim.to_string(), Style::default().fg(p.overlay0)));
     }
-    // A git-ignored file recedes into a dim basename; its change marker and stats keep their
-    // color so a kept ignored file still reads as a change (file-list.md).
-    let base_style = if ignored { Style::default().fg(p.overlay0) } else { text_style(p) };
-    // The match highlight follows the engine's spans onto the shown text, remapped across any
-    // head-elision so a matched, still-visible character is never left unmarked (search.md).
-    let shown_spans = remap_emphasis(emphasis, name, &shown);
-    if shown_spans.is_empty() {
-        // No visible match: dim the parent directories of a collapsed-chain name, keep the
-        // basename bright.
-        let (dim, base) = match shown.rfind('/') {
-            Some(s) => (&shown[..=s], &shown[s + 1..]),
-            None => ("", shown.as_str()),
-        };
-        if !dim.is_empty() {
-            spans.push(Span::styled(dim.to_string(), Style::default().fg(p.overlay0)));
-        }
-        spans.push(Span::styled(base.to_string(), base_style));
-    } else {
-        // Dim the parent directories the same way, under the match highlight on the runs the
-        // engine reported.
-        let basename_at = shown.rfind('/').map_or(0, |i| i + 1);
-        spans.extend(emphasized_spans(&shown, &shown_spans, p.match_hl, |byte| {
-            if byte < basename_at { Style::default().fg(p.overlay0) } else { base_style }
-        }));
-    }
+    spans.push(Span::styled(base.to_string(), text_style(p)));
     if !stats.is_empty() {
         let used: usize = spans.iter().map(Span::width).sum();
         let pad = width.saturating_sub(used + stats.width());
@@ -867,25 +806,6 @@ fn stats_spans(additions: u32, deletions: u32, p: &Palette) -> Vec<Span<'static>
         spans.push(Span::styled(format!("−{deletions}"), Style::default().fg(p.red)));
     }
     spans
-}
-
-/// Remap match byte spans from the full `name` onto the possibly head-elided `shown`
-/// (`…/tail`). A span inside the kept tail shifts onto its shown position, past the ellipsis;
-/// one entirely in the dropped head is lost — it has nowhere to show (specs/search.md).
-fn remap_emphasis(spans: &[(u32, u32)], name: &str, shown: &str) -> Vec<(u32, u32)> {
-    if spans.is_empty() {
-        return Vec::new();
-    }
-    // `shown` is `elide_head(name)`: `name` itself (no leading `…`, so the spans map straight
-    // through) or `…` + a suffix of `name`. Place the kept suffix's bytes past the ellipsis.
-    let Some(tail) = shown.strip_prefix('…') else { return spans.to_vec() };
-    let prefix = '…'.len_utf8() as u32;
-    let tail_start = (name.len() - tail.len()) as u32;
-    spans
-        .iter()
-        .filter(|&&(_, e)| e > tail_start)
-        .map(|&(s, e)| (prefix + s.saturating_sub(tail_start), prefix + (e - tail_start)))
-        .collect()
 }
 
 /// Shorten `name` to `max` columns by eliding its head behind a leading `…`, preferring to
@@ -979,11 +899,7 @@ fn render_diff_view(frame: &mut Frame, app: &App, area: Rect) {
     let mut title = match (&app.diff_path, &app.diff.previous_path) {
         (Some(new), Some(old)) => format!("{old} → {new}"),
         (Some(new), None) => new.clone(),
-        (None, _) => match app.tab {
-            Tab::AllFiles => "File",
-            _ => "Diff",
-        }
-        .to_string(),
+        (None, _) => "Diff".to_string(),
     };
     if app.preview_active() {
         title.push_str(" · preview");
@@ -994,15 +910,7 @@ fn render_diff_view(frame: &mut Frame, app: &App, area: Rect) {
     app.note_diff_width(inner.width as usize);
 
     if app.visible.is_empty() {
-        // `All files` is a content browser, not a diff, so its empty/notice copy avoids diff
-        // vocabulary and never shows the last-turn "waiting" state.
         let msg = match app.tab {
-            Tab::AllFiles => match app.diff.state {
-                FileState::Binary => "binary — no line comments",
-                FileState::TooLarge => "file too large",
-                FileState::Normal if app.diff_path.is_some() => "empty file",
-                FileState::Normal => "select a file to read",
-            },
             Tab::Changes if app.awaiting_turn() => app.turn_wait_message(),
             _ => match app.diff.state {
                 FileState::Binary => "binary — no line comments",
@@ -1580,7 +1488,7 @@ fn action_key_label(app: &App, action: FooterAction) -> (String, String) {
         A::Save => ("enter".into(), "save"),
         A::Newline => ("shift+enter".into(), "newline"),
         A::Cancel | A::ClosePicker => ("esc".into(), "cancel"),
-        A::CloseList | A::CloseSearch | A::CloseFind => ("esc".into(), "close"),
+        A::CloseList | A::CloseFind => ("esc".into(), "close"),
         A::PickAgent => ("enter".into(), "send"),
         // The digits are literal, so they are spelled; the two movement keys are bound, so they
         // read off the keymap like every other hint (`specs/input.md`).
@@ -1603,22 +1511,13 @@ fn action_key_label(app: &App, action: FooterAction) -> (String, String) {
             .collect();
             (others.join("/"), "scope")
         }
-        A::Search => (hint(K::Search), "search"),
         A::Find => (hint(K::Find), "find"),
         A::Wrap => (hint(K::Wrap), "wrap"),
         A::FindStep => ("↑↓".into(), "match"),
-        A::FlipSearchMode => {
-            // The label names the destination mode: `code` from Files, `files` from Code.
-            let to_code =
-                app.search.as_ref().is_none_or(|s| s.search_mode == crate::app::SearchMode::Files);
-            return ("tab".into(), if to_code { "code" } else { "files" }.into());
-        }
-        A::PickResult => ("↑↓".into(), "pick"),
-        A::OpenResult => ("enter".into(), "open"),
         A::OpenPr => (hint(K::OpenPr), "open ↗"),
         A::Refresh => (hint(K::Refresh), "refresh"),
         A::Tabs => {
-            (format!("{}·{}·{}", hint(K::TabChanges), hint(K::TabAllFiles), hint(K::TabPr)), "tabs")
+            (format!("{}·{}·{}", hint(K::TabChanges), hint(K::TabPr), hint(K::TabIssues)), "tabs")
         }
         A::Quit => (hint(K::Quit), "quit"),
     };
@@ -2213,592 +2112,6 @@ pub fn hit_base_picker_row(area: Rect, app: &App, col: u16, row: u16) -> Option<
     menu_hit(inner, 1, first, bp.filtered().len(), col, row)
 }
 
-// --- Search screen (specs/search.md) -------------------------------------------------------
-
-/// The active mode's display rows: file rows in `Files`; per-file header rows and their
-/// match rows in `Code`, in engine order. The pick indexes only `File`/`Code` rows.
-enum SearchRow {
-    /// A file's group header in `Code` mode, carrying the index of the first code hit under
-    /// it — the header renders that hit's path, so no path is cloned into the row.
-    Header(usize),
-    File(usize),
-    Code(usize),
-    /// The clip marker `… more`; the full count lives in the chip (specs/search.md).
-    More,
-}
-
-fn search_rows(s: &crate::app::SearchOverlay) -> Vec<SearchRow> {
-    let mut rows = Vec::new();
-    match s.search_mode {
-        crate::app::SearchMode::Files => {
-            rows.extend((0..s.results.files.len()).map(SearchRow::File));
-            let more = s.results.file_total.saturating_sub(s.results.files.len());
-            if more > 0 {
-                // The full total lives in the chip, so the clip marker just says there is
-                // more — the same wording as Code, which has no total (specs/search.md).
-                rows.push(SearchRow::More);
-            }
-        }
-        crate::app::SearchMode::Code => {
-            // The engine returns content matches file by file — the header rows only
-            // make that visible, nothing is reordered (specs/search.md).
-            let mut last: Option<&str> = None;
-            for (i, hit) in s.results.code.iter().enumerate() {
-                if last != Some(hit.path.as_str()) {
-                    rows.push(SearchRow::Header(i));
-                    last = Some(hit.path.as_str());
-                }
-                rows.push(SearchRow::Code(i));
-            }
-            if s.results.code_more {
-                rows.push(SearchRow::More);
-            }
-        }
-    }
-    rows
-}
-
-/// The pick a display row maps to, if it is a result row.
-fn search_row_pick(row: &SearchRow) -> Option<usize> {
-    match row {
-        SearchRow::File(i) | SearchRow::Code(i) => Some(*i),
-        _ => None,
-    }
-}
-
-/// A pane's titled top rule: `─ label ─────`, brighter than the surrounding chrome so the
-/// two stacked panes read as separate regions (specs/search.md).
-fn search_pane_rule(label: &str, width: usize, p: &Palette) -> Line<'static> {
-    let head = format!("─ {label} ");
-    let style = Style::default().fg(p.subtext0);
-    let mut line = Line::from(Span::styled(head.clone(), style));
-    if let Some(pad) = width.checked_sub(head.width()).filter(|w| *w > 0) {
-        line.push_span(Span::styled("─".repeat(pad), style));
-    }
-    line
-}
-
-/// The results pane's list area, below its title rule. The title takes the first row when
-/// the pane has more than one; shared by the renderer and hit-testing so a click resolves
-/// against what was painted.
-fn search_results_list(results: Rect) -> Rect {
-    let title = u16::from(results.height > 1);
-    Rect::new(results.x, results.y + title, results.width, results.height - title)
-}
-
-/// The screen's vertical bands within the body: the input band, the results pane, the
-/// divider row (which carries the preview title and takes the drag), and the preview.
-/// One home, shared by the renderer and mouse hit-testing so a click always resolves
-/// against what was painted.
-pub(crate) struct SearchLayout {
-    pub band: Rect,
-    pub results: Rect,
-    pub divider: Rect,
-    pub preview: Rect,
-}
-
-pub(crate) fn search_layout(body: Rect, app: &App) -> SearchLayout {
-    let band = Rect::new(body.x, body.y, body.width, body.height.min(1));
-    let rest_y = body.y + band.height;
-    let rest_h = body.height - band.height;
-    let divider_h = rest_h.min(1);
-    let avail = rest_h - divider_h;
-    // The share splits the panes through the same minimum-pane rule as the review split.
-    let results_h = split_axis(avail, app.search_pct);
-    let results = Rect::new(body.x, rest_y, body.width, results_h);
-    let divider = Rect::new(body.x, rest_y + results_h, body.width, divider_h);
-    let preview = Rect::new(body.x, divider.y + divider.height, body.width, avail - results_h);
-    SearchLayout { band, results, divider, preview }
-}
-
-/// The mode chips' texts: the active one bright, both carrying a live count once the
-/// engine is warm — empty while warming (specs/search.md).
-fn search_chip_texts(s: &crate::app::SearchOverlay) -> (String, String) {
-    if s.phase != crate::app::SearchPhase::Ready {
-        return ("files".to_string(), "code".to_string());
-    }
-    // Both chips carry a live count once warm; an empty query lists no code, so its count
-    // is `0` (specs/search.md).
-    let files = format!("files {}", s.results.file_total);
-    let plus = if s.results.code_more { "+" } else { "" };
-    let code = format!("code {}{plus}", s.results.code.len());
-    (files, code)
-}
-
-/// The chips' painted width — `files N │ code M`, the ` │ ` separator included. One home,
-/// shared by the renderer and hit-testing so a click resolves against what was painted.
-fn chips_width(files: &str, code: &str) -> u16 {
-    (files.width() + 3 + code.width()) as u16
-}
-
-fn render_search(frame: &mut Frame, app: &App, body: Rect) {
-    let Some(s) = app.search.as_ref() else { return };
-    let p = app.palette();
-    let l = search_layout(body, app);
-
-    // The input band: the query with the comment editor's peach prompt and block caret,
-    // then the mode chips `files │ code` — the active one lit like the active header tab,
-    // the inactive one quiet, its count the hint that the other mode has hits. The footer
-    // owns the `tab` flip key, so the chips carry no glyph (specs/search.md).
-    let (files_chip, code_chip) = search_chip_texts(s);
-    let chips_w = chips_width(&files_chip, &code_chip);
-    let active =
-        Style::default().fg(p.lavender).add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
-    let inactive = Style::default().fg(p.subtext0);
-    let dim = Style::default().fg(p.overlay0);
-    let files_mode = s.search_mode == crate::app::SearchMode::Files;
-    let chips = Line::from(vec![
-        Span::styled(files_chip, if files_mode { active } else { inactive }),
-        Span::styled(" │ ", dim),
-        Span::styled(code_chip, if files_mode { inactive } else { active }),
-    ]);
-    let query_w = l.band.width.saturating_sub(chips_w + 1);
-    let mut input = if s.query.is_empty() {
-        // An empty query shows a dim placeholder a space past the caret (specs/search.md).
-        let mut line = row_with_caret("", 0, p);
-        line.spans.push(Span::styled(" Search files and code…", dim));
-        line
-    } else {
-        // The single-line query cannot wrap, so scroll it horizontally to keep the caret
-        // in view — a longer query otherwise clips the caret off the right edge.
-        let caret_col = s.caret.min(s.query.chars().count());
-        let chars: Vec<char> = s.query.chars().collect();
-        let avail = (query_w as usize).saturating_sub(2); // after the "> " prompt
-        let start = caret_col.saturating_sub(avail.saturating_sub(1));
-        let visible: String = chars[start.min(chars.len())..].iter().collect();
-        row_with_caret(&visible, caret_col - start, p)
-    };
-    input.spans.insert(0, Span::styled("> ", Style::default().fg(p.peach)));
-    frame.render_widget(
-        Paragraph::new(input),
-        Rect::new(l.band.x, l.band.y, query_w, l.band.height),
-    );
-    if l.band.width > chips_w {
-        frame.render_widget(
-            Paragraph::new(chips),
-            Rect::new(l.band.x + l.band.width - chips_w, l.band.y, chips_w, l.band.height),
-        );
-    }
-
-    render_search_results(frame, app, s, l.results, p);
-    render_search_divider(frame, s, l.divider, p);
-    render_search_preview(frame, s, l.preview, p);
-}
-
-fn render_search_results(
-    frame: &mut Frame,
-    app: &App,
-    s: &crate::app::SearchOverlay,
-    region: Rect,
-    p: &Palette,
-) {
-    if region.height == 0 {
-        return;
-    }
-    if region.height > 1 {
-        frame.render_widget(
-            Paragraph::new(search_pane_rule("results", region.width as usize, p)),
-            Rect::new(region.x, region.y, region.width, 1),
-        );
-    }
-    let region = search_results_list(region);
-    if region.height == 0 {
-        return;
-    }
-    match &s.phase {
-        crate::app::SearchPhase::Indexing => {
-            frame.render_widget(dim_paragraph("indexing…", p), region);
-            return;
-        }
-        crate::app::SearchPhase::Error(e) => {
-            frame.render_widget(
-                Paragraph::new(Span::styled(e.clone(), Style::default().fg(p.red))),
-                region,
-            );
-            return;
-        }
-        crate::app::SearchPhase::Ready => {}
-    }
-
-    let rows = search_rows(s);
-    if rows.is_empty() {
-        // An empty query in `Code` mode lists nothing by contract — no copy implying
-        // the engine looked and found none (specs/search.md).
-        if !(s.search_mode == crate::app::SearchMode::Code && s.query.trim().is_empty()) {
-            frame.render_widget(dim_paragraph("no matches", p), region);
-        }
-        return;
-    }
-    // The list scrolls to keep the pick visible, so every result is reachable
-    // (specs/search.md). A layout change re-clamps here, keeping the pick.
-    let viewport = region.height as usize;
-    let picked_disp = rows.iter().position(|r| search_row_pick(r) == Some(s.pick)).unwrap_or(0);
-    let mut scroll = s.scroll.get().min(rows.len().saturating_sub(viewport));
-    if picked_disp < scroll {
-        scroll = picked_disp;
-    } else if picked_disp >= scroll + viewport {
-        scroll = picked_disp + 1 - viewport;
-    }
-    s.scroll.set(scroll);
-
-    let width = region.width as usize;
-    let items: Vec<ListItem> = rows
-        .iter()
-        .skip(scroll)
-        .take(viewport)
-        .map(|row| match row {
-            SearchRow::Header(i) => {
-                let path = &s.results.code[*i].path;
-                file_row_item(
-                    &FileRowSpec {
-                        indent: "",
-                        annotation: app.changed_annotation(path),
-                        name: path,
-                        ignored: false,
-                        emphasis: &[],
-                    },
-                    width,
-                    None,
-                    p,
-                )
-            }
-            SearchRow::More => {
-                ListItem::new(Line::from(Span::styled("… more", Style::default().fg(p.overlay0))))
-            }
-            SearchRow::File(i) => {
-                let hit = &s.results.files[*i];
-                let fill = (s.pick == *i).then_some(p.surface2);
-                file_row_item(
-                    &FileRowSpec {
-                        indent: "",
-                        annotation: app.changed_annotation(&hit.path),
-                        name: &hit.path,
-                        ignored: false,
-                        emphasis: &hit.spans,
-                    },
-                    width,
-                    fill,
-                    p,
-                )
-            }
-            SearchRow::Code(i) => {
-                let hit = &s.results.code[*i];
-                let fill = (s.pick == *i).then_some(p.surface2);
-                search_code_row(hit, width, fill, p)
-            }
-        })
-        .collect();
-    frame.render_widget(List::new(items), region);
-}
-
-/// The divider row between the panes: a rule carrying the preview's title — the pane
-/// title names the previewed file (specs/search.md) — and the drag target.
-fn render_search_divider(
-    frame: &mut Frame,
-    s: &crate::app::SearchOverlay,
-    region: Rect,
-    p: &Palette,
-) {
-    if region.height == 0 {
-        return;
-    }
-    let label = match s.preview.as_ref() {
-        Some(pv) => format!("preview · {}", pv.path),
-        None => "preview".to_string(),
-    };
-    frame.render_widget(Paragraph::new(search_pane_rule(&label, region.width as usize, p)), region);
-}
-
-/// The preview: the picked file as the read pane's File view, syntax highlighted, the
-/// hit line centered, banded, and match-emphasized (specs/search.md).
-fn render_search_preview(
-    frame: &mut Frame,
-    s: &crate::app::SearchOverlay,
-    region: Rect,
-    p: &Palette,
-) {
-    if region.height == 0 {
-        return;
-    }
-    // With nothing to preview — no pick yet, or a deleted file — a dim notice, not a
-    // blank pane that reads as broken (specs/search.md).
-    let Some(pv) = s.preview.as_ref() else {
-        frame.render_widget(dim_paragraph("no preview", p), region);
-        return;
-    };
-    let notice = match pv.diff.state {
-        FileState::Binary => Some("binary — no line comments"),
-        FileState::TooLarge => Some("file too large"),
-        FileState::Normal if pv.diff.rows.is_empty() => Some("no preview"),
-        FileState::Normal => None,
-    };
-    if let Some(notice) = notice {
-        frame.render_widget(dim_paragraph(notice, p), region);
-        return;
-    }
-    let rows = &pv.diff.rows;
-    let h = region.height as usize;
-    let max_scroll = rows.len().saturating_sub(h);
-    // Center the hit once per build; `PageUp`/`PageDown` then move the pane freely.
-    if pv.center.get() {
-        let target = pv.hit.as_ref().map_or(0, |(l, _)| (*l as usize).saturating_sub(1));
-        pv.scroll.set(target.saturating_sub(h / 2));
-        pv.center.set(false);
-    }
-    let scroll = pv.scroll.get().min(max_scroll);
-    pv.scroll.set(scroll);
-    let gw = gutter_for(&pv.diff);
-    let width = region.width as usize;
-    let lines: Vec<Line> = rows
-        .iter()
-        .skip(scroll)
-        .take(h)
-        .map(|row| {
-            let hit = pv
-                .hit
-                .as_ref()
-                .filter(|(l, _)| row.new_no() == Some(*l as u32))
-                .map(|(_, spans)| spans.as_slice());
-            search_preview_line(row, gw, width, hit, p)
-        })
-        .collect();
-    frame.render_widget(Paragraph::new(lines), region);
-}
-
-/// One preview row: a dim line number, then the row's syntax spans. The hit row takes
-/// the cursor band and match emphasis on the engine's byte spans.
-fn search_preview_line(
-    row: &Row,
-    gw: usize,
-    width: usize,
-    hit: Option<&[(u32, u32)]>,
-    p: &Palette,
-) -> Line<'static> {
-    let num = row.new_no().map_or(String::new(), |n| n.to_string());
-    let mut spans = vec![Span::styled(format!("{num:>gw$} "), Style::default().fg(p.overlay1))];
-    match hit {
-        None => {
-            for sp in row.spans() {
-                spans.push(Span::styled(
-                    sp.text.replace('\t', "    "),
-                    Style::default().fg(rgb(sp.color)),
-                ));
-            }
-            Line::from(spans)
-        }
-        Some(ranges) => {
-            let text = row.text();
-            // The engine trims each match line's leading indentation and reports offsets
-            // into the trimmed text; the preview keeps the true indentation, so shift the
-            // spans over this line's own leading whitespace to land them on the match
-            // (specs/search.md).
-            let indent = (text.len() - text.trim_start().len()) as u32;
-            let ranges: Vec<(u32, u32)> =
-                ranges.iter().map(|&(s, e)| (s + indent, e + indent)).collect();
-            // Recover each byte's syntax color from the spans in one forward pass (the
-            // emphasis loop visits bytes in order), then lay the match highlight over the
-            // matched runs.
-            let mut colors: Vec<(usize, Color)> = Vec::new();
-            let mut at = 0usize;
-            for sp in row.spans() {
-                colors.push((at, rgb(sp.color)));
-                at += sp.text.len();
-            }
-            let mut ci = 0usize;
-            let base = |byte: usize| {
-                while ci + 1 < colors.len() && colors[ci + 1].0 <= byte {
-                    ci += 1;
-                }
-                Style::default().fg(colors.get(ci).map_or(p.text, |&(_, c)| c))
-            };
-            let emphasized = emphasized_spans(&text, &ranges, p.match_hl, base);
-            spans.extend(
-                emphasized
-                    .into_iter()
-                    .map(|sp| Span::styled(sp.content.replace('\t', "    "), sp.style)),
-            );
-            let mut line = Line::from(spans);
-            let pad = width.saturating_sub(line.width());
-            if pad > 0 {
-                line.push_span(Span::raw(" ".repeat(pad)));
-            }
-            line.style(Style::default().bg(p.cursor_bg(true)))
-        }
-    }
-}
-
-/// A code match row: `line:` dimmed, then the matched line. A too-wide row clips the line
-/// around its first matched span, keeping the emphasis visible (specs/search.md).
-fn search_code_row(
-    hit: &crate::search::CodeHit,
-    width: usize,
-    fill: Option<Color>,
-    p: &Palette,
-) -> ListItem<'static> {
-    let locator = format!("{:>5}: ", hit.line);
-    let avail = width.saturating_sub(locator.width());
-    // Expand tabs before the width and clip math run on the line (see `expand_tabs`).
-    let (text, match_spans) = expand_tabs(hit.text.trim_end(), &hit.spans);
-    let text = text.as_str();
-    // When the first matched span sits past the visible window, skip the line's head so
-    // the match shows, marking the cut with a leading `…`. The engine's byte offset is
-    // snapped back to a char boundary — slicing mid-character would panic the frame.
-    let mut first = match_spans.first().map_or(0, |&(s, _)| s as usize).min(text.len());
-    while first > 0 && !text.is_char_boundary(first) {
-        first -= 1;
-    }
-    let head_cols: usize = text[..first].width();
-    let (skip_bytes, prefix) = if head_cols + 8 > avail && avail > 8 {
-        // Walk from the front until the remaining head fits in a third of the row.
-        let keep = avail / 3;
-        let mut cut = 0;
-        let mut remaining = head_cols;
-        for (i, c) in text[..first].char_indices() {
-            if remaining <= keep {
-                cut = i;
-                break;
-            }
-            remaining -= unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
-            cut = i + c.len_utf8();
-        }
-        // At a very thin width the walk can keep the whole head (cut stays 0); mark the cut
-        // only when one was actually made, so an un-truncated line wears no `…`.
-        (cut, if cut > 0 { "…" } else { "" })
-    } else {
-        (0, "")
-    };
-    let shown = &text[skip_bytes..];
-    let offset = skip_bytes as u32;
-    let shifted: Vec<(u32, u32)> = match_spans
-        .iter()
-        .filter(|&&(_, e)| e > offset)
-        .map(|&(st, e)| (st.saturating_sub(offset), e - offset))
-        .collect();
-    let mut spans = vec![Span::styled(locator, Style::default().fg(p.overlay0))];
-    if !prefix.is_empty() {
-        spans.push(Span::styled(prefix.to_string(), Style::default().fg(p.overlay0)));
-    }
-    spans.extend(emphasized_spans(shown, &shifted, p.match_hl, |_| text_style(p)));
-    selectable_row(p, spans, width, fill)
-}
-
-/// Expand tabs to four spaces, shifting the match byte spans to keep them over the same
-/// characters. The engine reports match offsets into the raw line; a tab is zero display
-/// columns to the width math but real width on screen, so an un-expanded tab-indented row
-/// would skip the clip and overflow.
-fn expand_tabs(text: &str, spans: &[(u32, u32)]) -> (String, Vec<(u32, u32)>) {
-    if !text.contains('\t') {
-        return (text.to_string(), spans.to_vec());
-    }
-    let mut out = String::with_capacity(text.len());
-    let mut tabs = Vec::new();
-    for (i, c) in text.char_indices() {
-        if c == '\t' {
-            out.push_str("    ");
-            tabs.push(i);
-        } else {
-            out.push(c);
-        }
-    }
-    // Each tab strictly before an offset added three bytes; the tab positions are sorted.
-    let shift = |at: usize| -> u32 { (tabs.partition_point(|&t| t < at) * 3) as u32 };
-    let spans =
-        spans.iter().map(|&(s, e)| (s + shift(s as usize), e + shift(e as usize))).collect();
-    (out, spans)
-}
-
-/// Split `text` into spans, laying the match highlight `hl` behind the engine's matched
-/// byte ranges on top of the position-dependent base style — a calm find-highlight that
-/// reads over plain text, syntax color, and the preview's banded hit line alike.
-///
-/// `base` is called once per character with the byte index, in strictly increasing order, so
-/// a caller that resolves a position-dependent color may advance a forward cursor instead of
-/// re-scanning per byte.
-fn emphasized_spans(
-    text: &str,
-    ranges: &[(u32, u32)],
-    hl: Color,
-    mut base: impl FnMut(usize) -> Style,
-) -> Vec<Span<'static>> {
-    let mut spans = Vec::new();
-    let mut run = String::new();
-    let mut run_style = Style::default();
-    for (i, c) in text.char_indices() {
-        let mut style = base(i);
-        if ranges.iter().any(|&(s, e)| (s as usize) <= i && i < (e as usize)) {
-            style = style.bg(hl).add_modifier(Modifier::BOLD);
-        }
-        if run.is_empty() {
-            run_style = style;
-        } else if style != run_style {
-            spans.push(Span::styled(std::mem::take(&mut run), run_style));
-            run_style = style;
-        }
-        run.push(c);
-    }
-    if !run.is_empty() {
-        spans.push(Span::styled(run, run_style));
-    }
-    spans
-}
-
-/// What a mouse position lands on inside the search screen, resolved against the same
-/// layout the frame painted (specs/search.md Keys).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum SearchTarget {
-    /// The mode chips — a click flips the mode.
-    Chips,
-    /// A result row's pick index.
-    Row(usize),
-    /// The divider row — mouse-down starts the share drag.
-    Divider,
-    /// Elsewhere in the results pane — the wheel moves the pick here.
-    Results,
-    /// The preview pane — the wheel scrolls it here.
-    Preview,
-}
-
-pub fn search_target(app: &App, area: Rect, col: u16, row: u16) -> Option<SearchTarget> {
-    let s = app.search.as_ref()?;
-    let l = search_layout(body_rect(area, app), app);
-    let within = |r: Rect| {
-        col >= r.x && col < r.x + r.width && row >= r.y && row < r.y + r.height && r.height > 0
-    };
-    if within(l.band) {
-        let (files_chip, code_chip) = search_chip_texts(s);
-        let chips_w = chips_width(&files_chip, &code_chip);
-        if l.band.width > chips_w && col >= l.band.x + l.band.width - chips_w {
-            return Some(SearchTarget::Chips);
-        }
-        return None;
-    }
-    if within(l.divider) {
-        return Some(SearchTarget::Divider);
-    }
-    if within(l.preview) {
-        return Some(SearchTarget::Preview);
-    }
-    if !within(l.results) {
-        return None;
-    }
-    // Off `Ready` the frame painted a message, not rows — held results are invisible,
-    // so no click may resolve into them.
-    if s.phase != crate::app::SearchPhase::Ready {
-        return Some(SearchTarget::Results);
-    }
-    // The rows live below the pane's title rule; a click on the title resolves to the
-    // pane, not a row.
-    let list = search_results_list(l.results);
-    if !within(list) {
-        return Some(SearchTarget::Results);
-    }
-    let disp = s.scroll.get() + (row - list.y) as usize;
-    match search_rows(s).get(disp).and_then(search_row_pick) {
-        Some(pick) => Some(SearchTarget::Row(pick)),
-        None => Some(SearchTarget::Results),
-    }
-}
-
 /// The default body text color.
 fn text_style(p: &Palette) -> Style {
     Style::default().fg(p.text)
@@ -2820,13 +2133,12 @@ fn selectable_row(
             spans.push(Span::raw(" ".repeat(width - used)));
         }
         for s in &mut spans {
-            // A span with its own background (the search match highlight) keeps it, so the
-            // match still reads on the selected row; the rest take the selection fill.
+            // A span with its own background keeps it; the rest take the selection fill.
             if s.style.bg.is_none() {
                 s.style = s.style.bg(bg);
             }
             // Dim text lifts, so a selected row keeps its secondary parts: the file list's
-            // indent, the search hit's line number, the picker row's state and tab trail.
+            // indent, the picker row's state and tab trail.
             // The theme owns which color that is (`specs/theme.md`).
             if let Some(fg) = s.style.fg {
                 s.style = s.style.fg(p.on_fill(fg));

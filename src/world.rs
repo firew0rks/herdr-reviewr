@@ -5,7 +5,7 @@
 //! (specs/tui.md Refresh). Reconciling a snapshot into place state stays
 //! in `App::reconcile_world`, the one home for the Continuity rules (specs/overview.md).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender};
 
@@ -36,8 +36,6 @@ pub struct WorldInput {
     pub base_epoch: u64,
     /// The `last-turn` baseline tree the changed set diffs against; `None` before a turn.
     pub turn_baseline: Option<String>,
-    /// Expanded ignored directories whose children the `All files` tree loads.
-    pub toggled_dirs: HashSet<String>,
 }
 
 /// The derived state one refresh produces: the scope changeset, the navigator entries, and
@@ -50,10 +48,8 @@ pub struct WorldSnapshot {
     pub branch_base: git::BaseStatus,
 }
 
-/// Build the snapshot for `input`. The changeset is computed regardless of tab so the
-/// header count and comment staleness stay correct while `All files` lists the whole
-/// worktree. In `last-turn` with no baseline yet, the changeset is empty until a turn
-/// start is observed (specs/review-model.md).
+/// Build the snapshot for `input`. In `last-turn` with no baseline yet, the changeset is
+/// empty until a turn start is observed (specs/review-model.md).
 pub fn build(input: &WorldInput) -> Result<WorldSnapshot> {
     // Outside a git repo, an empty snapshot paints the quiet empty state rather than a
     // failing status line every poll (specs/herdr-host.md).
@@ -65,14 +61,8 @@ pub fn build(input: &WorldInput) -> Result<WorldSnapshot> {
         });
     }
     let (branch_base, changed) = build_changed(input)?;
-    let changed_map = annotate(&changed);
-    let entries = match input.tab {
-        // The whole worktree (ignored included), with expanded ignored dirs loaded lazily.
-        Tab::AllFiles => all_files_entries(input, &changed_map)?,
-        // `Changes` (the `PR` tab never builds a snapshot).
-        _ => changed.iter().map(Entry::from_changed).collect(),
-    };
-    Ok(WorldSnapshot { changed: changed_map, entries, branch_base })
+    let entries = changed.iter().map(Entry::from_changed).collect();
+    Ok(WorldSnapshot { changed: annotate(&changed), entries, branch_base })
 }
 
 /// The active scope's changed files and, on the `branch` scope, the base they diff against —
@@ -113,33 +103,6 @@ pub fn annotate(changed: &[ChangedFile]) -> HashMap<String, Annotation> {
 /// worker's tracker and the app's first-frame mirror (specs/herdr-host.md).
 pub fn seed_baseline(repo: &std::path::Path) -> Option<String> {
     git::read_baseline_ref(repo, &git::worktree_key(repo))
-}
-
-/// The `All files` entries: every worktree path (ignored dimmed), with the children of
-/// expanded ignored directories loaded lazily (`specs/file-list.md`). Only directories the
-/// user has expanded are walked, so the cost tracks what is on screen, not the whole tree.
-pub(crate) fn all_files_entries(
-    input: &WorldInput,
-    changed: &HashMap<String, Annotation>,
-) -> Result<Vec<Entry>> {
-    let to_entry = |w: git::WorktreeEntry| Entry {
-        annotation: changed.get(&w.path).cloned(),
-        path: w.path,
-        previous_path: None,
-        ignored: w.ignored,
-        is_dir: w.is_dir,
-    };
-    let mut entries: Vec<Entry> = git::all_files(&input.repo)?.into_iter().map(&to_entry).collect();
-    let mut i = 0;
-    while i < entries.len() {
-        if entries[i].is_dir && input.toggled_dirs.contains(&entries[i].path) {
-            let path = entries[i].path.clone();
-            let children = git::list_ignored_dir(&input.repo, &path).into_iter().map(&to_entry);
-            entries.extend(children);
-        }
-        i += 1;
-    }
-    Ok(entries)
 }
 
 /// Turn tracking, owned by the worker: the sample, the snapshot capture, and the baseline
@@ -367,7 +330,7 @@ pub fn spawn(
                 }
                 let turn = job.sample_turn.then(|| host.sample());
                 job.input.turn_baseline = host.baseline().map(str::to_string);
-                let snapshot = job.input.tab.is_file_tab().then(|| build(&job.input));
+                let snapshot = (job.input.tab == Tab::Changes).then(|| build(&job.input));
                 let completion = WorldCompletion {
                     generation: job.generation,
                     input: job.input,

@@ -7,10 +7,9 @@ use std::path::Path;
 
 use common::Repo;
 use herdr_reviewr::git::{
-    all_files, changed_against_tree, changed_files as changed_files_oid, clear_base_pick,
-    default_branch_name, file_content, list_branches, merge_base as merge_base_oid, read_base_pick,
-    read_baseline_ref, resolve_base, snapshot_worktree, worktree_key, write_base_pick,
-    write_baseline_ref,
+    changed_against_tree, changed_files as changed_files_oid, clear_base_pick, default_branch_name,
+    file_content, list_branches, merge_base as merge_base_oid, read_base_pick, read_baseline_ref,
+    resolve_base, snapshot_worktree, worktree_key, write_base_pick, write_baseline_ref,
 };
 use herdr_reviewr::model::{ChangeKind, ChangedFile, Scope};
 
@@ -647,48 +646,4 @@ fn worktree_key_is_stable_and_path_specific() {
     let b = std::path::Path::new("/repo/two");
     assert_eq!(worktree_key(a), worktree_key(a), "deterministic for one path");
     assert_ne!(worktree_key(a), worktree_key(b), "distinct per worktree path");
-}
-
-#[test]
-fn all_files_lists_tracked_untracked_and_ignored_dirs_collapsed() {
-    let r = Repo::init();
-    r.write("src/app.rs", "fn main() {}\n");
-    r.write("Cargo.toml", "[package]\n");
-    r.commit_all("init");
-    r.write("untracked.rs", "u\n"); // untracked, not ignored
-    r.write(".gitignore", "target/\nbuild.log\n");
-    r.write("target/build.o", "binary\n"); // ignored, in a wholly-ignored dir
-    r.write("target/deep/x.o", "binary\n"); // ignored, deeper — must not be walked
-    r.write("build.log", "noise\n"); // ignored, individual file
-
-    let files = all_files(r.path()).unwrap();
-    let by = |p: &str| files.iter().find(|e| e.path == p);
-    assert!(by("src/app.rs").is_some_and(|e| !e.ignored && !e.is_dir), "tracked file listed");
-    assert!(by("untracked.rs").is_some_and(|e| !e.ignored), "untracked-not-ignored listed");
-    // A wholly-ignored directory collapses to one ignored placeholder — its contents are NOT listed.
-    assert!(by("target").is_some_and(|e| e.ignored && e.is_dir), "ignored dir is a placeholder");
-    assert!(!files.iter().any(|e| e.path.starts_with("target/")), "ignored dir is not walked");
-    // An individually-ignored file is listed as an ignored file.
-    assert!(by("build.log").is_some_and(|e| e.ignored && !e.is_dir), "ignored file listed, dimmed");
-
-    let paths: Vec<&str> = files.iter().map(|e| e.path.as_str()).collect();
-    let mut sorted = paths.clone();
-    sorted.sort_unstable();
-    assert_eq!(paths, sorted, "the listing is sorted");
-}
-
-#[test]
-fn list_ignored_dir_returns_immediate_children_only() {
-    use herdr_reviewr::git::list_ignored_dir;
-    let r = Repo::init();
-    r.write(".gitignore", "target/\n");
-    r.write("target/build.o", "x\n");
-    r.write("target/deep/x.o", "y\n");
-    r.commit_all("init");
-
-    let kids = list_ignored_dir(r.path(), "target");
-    assert!(kids.iter().all(|e| e.ignored), "every child of an ignored dir is ignored");
-    assert!(kids.iter().any(|e| e.path == "target/build.o" && !e.is_dir), "immediate file");
-    assert!(kids.iter().any(|e| e.path == "target/deep" && e.is_dir), "subdir as a placeholder");
-    assert!(!kids.iter().any(|e| e.path == "target/deep/x.o"), "does not recurse past one level");
 }

@@ -1134,87 +1134,6 @@ pub fn changed_against_tree(repo: &Path, tree: &str) -> Result<Vec<ChangedFile>>
     assemble(repo, &numstat, &name_status, false)
 }
 
-/// One entry in the `All files` worktree listing: a path plus whether git ignores it and
-/// whether it is a (lazily-expanded) directory placeholder (specs/file-list.md).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct WorktreeEntry {
-    pub path: String,
-    pub ignored: bool,
-    pub is_dir: bool,
-}
-
-/// Every entry in the worktree for the `All files` tab (specs/file-list.md): tracked and
-/// untracked-not-ignored files from one `ls-files --cached --others` pass, and the ignored
-/// entries from [`ignored_entries`] — a wholly-ignored directory collapsed to one `is_dir`
-/// placeholder, an individually-ignored file as itself. `.git` is never reported. Deduped and
-/// sorted; `-z` keeps paths with spaces or special characters verbatim.
-pub fn all_files(repo: &Path) -> Result<Vec<WorktreeEntry>> {
-    // One spawn for tracked + untracked. `--others --exclude-standard` applies the same
-    // standard exclude rules as the `status` untracked pass `changed_files` runs, so the
-    // untracked sets match without a status walk.
-    let listed = git(repo, &["ls-files", "--cached", "--others", "--exclude-standard", "-z"])?;
-    let mut seen = HashSet::new();
-    let mut out = Vec::new();
-    for path in listed.split('\0').filter(|s| !s.is_empty()) {
-        if seen.insert(path.to_string()) {
-            out.push(WorktreeEntry { path: path.to_string(), ignored: false, is_dir: false });
-        }
-    }
-    for (path, is_dir) in ignored_entries(repo)? {
-        if seen.insert(path.clone()) {
-            out.push(WorktreeEntry { path, ignored: true, is_dir });
-        }
-    }
-    out.sort_by(|a, b| a.path.cmp(&b.path));
-    Ok(out)
-}
-
-/// The ignored entries: a wholly-ignored directory comes back as `dir/` (mapped to
-/// `is_dir = true`), an individually-ignored file as itself.
-///
-/// `ls-files --directory` prunes at each ignored directory instead of walking inside it, where
-/// `git status --ignored` enumerates the whole tree — seconds against a large `node_modules`.
-/// `--no-empty-directory` matches `status`'s output exactly, which skips empty ignored dirs.
-fn ignored_entries(repo: &Path) -> Result<Vec<(String, bool)>> {
-    let out = git(
-        repo,
-        &[
-            "ls-files",
-            "--others",
-            "--ignored",
-            "--exclude-standard",
-            "--directory",
-            "--no-empty-directory",
-            "-z",
-        ],
-    )?;
-    Ok(out
-        .split('\0')
-        .filter(|s| !s.is_empty())
-        .map(|path| match path.strip_suffix('/') {
-            Some(dir) => (dir.to_string(), true),
-            None => (path.to_string(), false),
-        })
-        .collect())
-}
-
-/// The immediate children of a wholly-ignored directory, for lazy expansion in `All files`
-/// (specs/file-list.md). Everything under an ignored directory is ignored, so this reads the
-/// filesystem directly; sub-directories come back as `is_dir` placeholders to expand in turn.
-/// An unreadable directory yields no children rather than failing the reload, so expansion is
-/// best-effort.
-pub fn list_ignored_dir(repo: &Path, dir: &str) -> Vec<WorktreeEntry> {
-    let mut out = Vec::new();
-    let Ok(entries) = std::fs::read_dir(repo.join(dir)) else { return out };
-    for entry in entries.flatten() {
-        let Ok(name) = entry.file_name().into_string() else { continue };
-        let is_dir = entry.file_type().is_ok_and(|t| t.is_dir());
-        out.push(WorktreeEntry { path: format!("{dir}/{name}"), ignored: true, is_dir });
-    }
-    out.sort_by(|a, b| a.path.cmp(&b.path));
-    out
-}
-
 /// Build the sorted `ChangedFile` list from `git diff` numstat + name-status output,
 /// optionally appending untracked files (which a `git diff` never reports).
 fn assemble(
@@ -1235,8 +1154,7 @@ fn assemble(
     }
 
     if include_untracked {
-        // Untracked-not-ignored files list as additions. One `ls-files --others` pass — the
-        // same definition of untracked `all_files` uses, so the two views can't disagree.
+        // Untracked-not-ignored files list as additions, from one `ls-files --others` pass.
         // `-z` keeps paths with spaces or special characters verbatim, and files inside a
         // brand-new directory list individually (.gitignore still applies).
         let others = git(repo, &["ls-files", "--others", "--exclude-standard", "-z"])?;

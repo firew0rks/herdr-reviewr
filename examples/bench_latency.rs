@@ -56,70 +56,12 @@ fn main() {
             git::changed_files(&repo, Scope::Branch, base.map(|w| w.oid).as_deref()).unwrap();
         }),
     );
-    let all = git::all_files(&repo).unwrap();
-    row(
-        "all_files (ls-files+untracked+status --ignored)",
-        sample(5, || {
-            git::all_files(&repo).unwrap();
-        }),
-    );
     row(
         "snapshot_worktree (poll during turn)",
         sample(3, || {
             git::snapshot_worktree(&repo).unwrap();
         }),
     );
-
-    // --- File opens -------------------------------------------------------------
-    // Pick representative text files by on-disk size: the median, and the largest
-    // comfortably under the 2 MB diff byte budget so the open exercises a full
-    // highlight instead of the too-large notice.
-    let mut sized: Vec<(u64, String)> = all
-        .iter()
-        .filter(|e| !e.is_dir && !e.ignored)
-        .filter_map(|e| {
-            let m = std::fs::metadata(repo.join(&e.path)).ok()?;
-            let bytes = std::fs::read(repo.join(&e.path)).ok()?;
-            if bytes.contains(&0) {
-                return None; // binary
-            }
-            Some((m.len(), e.path.clone()))
-        })
-        .collect();
-    sized.sort();
-    if sized.is_empty() {
-        println!("no text files; skipping file opens");
-        return;
-    }
-    let median_file = sized[sized.len() / 2].1.clone();
-    let large_file = sized
-        .iter()
-        .rev()
-        .find(|(s, _)| *s < 1_000_000)
-        .map_or_else(|| median_file.clone(), |(_, p)| p.clone());
-    let large_kb = sized.iter().find(|(_, p)| *p == large_file).unwrap().0 / 1024;
-
-    // All files tab: set_file_view = fs read + highlight (cold), cache hit (warm).
-    for (tag, path) in [("median", &median_file), (&format!("large {large_kb}KB"), &large_file)] {
-        let content = std::fs::read_to_string(repo.join(path)).unwrap_or_default();
-        row(
-            &format!("file open, All files COLD ({tag})"),
-            sample(3, || {
-                let mut cache = DiffCache::new(); // cold: fresh cache each run
-                let c = std::fs::read_to_string(repo.join(path)).unwrap_or_default();
-                cache.get_file(path.clone(), &c, &hl);
-            }),
-        );
-        let mut warm = DiffCache::new();
-        warm.get_file(path.clone(), &content, &hl);
-        row(
-            &format!("file open, All files WARM ({tag})"),
-            sample(5, || {
-                let c = std::fs::read_to_string(repo.join(path)).unwrap_or_default();
-                warm.get_file(path.clone(), &c, &hl);
-            }),
-        );
-    }
 
     // Changes tab: set_diff = git show HEAD:path + fs read + two-side highlight + diff.
     if let Some(cf) = changed.first() {
@@ -146,23 +88,7 @@ fn main() {
             }),
         );
     } else {
-        // No uncommitted changes: still time the git-show side against the median file.
-        row(
-            "diff open sides only (git show, clean repo)",
-            sample(5, || {
-                git::file_content(&repo, "HEAD", &median_file);
-            }),
-        );
+        println!("no uncommitted changes; skipping diff opens");
     }
-
-    // --- Composite: what one All-files reload costs ------------------------------
-    // (The Changes composite is the changed_files row above — one call, no reopen.)
-    row(
-        "TAB SWITCH -> All files (reload, no reopen)",
-        sample(3, || {
-            git::changed_files(&repo, Scope::Uncommitted, None).unwrap();
-            git::all_files(&repo).unwrap();
-        }),
-    );
     println!();
 }

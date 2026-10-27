@@ -10,7 +10,7 @@ The structured diff viewer: how a file's changes are modeled and rendered with s
 
 ## Overview
 
-The viewer renders a `FileDiff`: the selected file as a list of rows, built from the file's old and new content, not from parsed `git diff` text. A row is the unit the pane paints and the cursor moves over. One model serves two views. The Diff view (`Changes`) shows old versus new with change rows and folds. The File view (`All files`) shows the whole current file as `context` rows.
+The viewer renders a `FileDiff`: the selected file as a list of rows, built from the file's old and new content, not from parsed `git diff` text. A row is the unit the pane paints and the cursor moves over. The pane (`Changes`) shows old versus new with change rows and folds.
 
 What the reviewer sees (unified view, a renamed TypeScript file):
 
@@ -71,16 +71,9 @@ Content rows are selectable for comments. A `fold` is not.
 - Changed words separated only by whitespace merge into one emphasis span. A gap holding any non-space character keeps them separate.
 - Emphasis never covers leading or trailing whitespace. A deepened indent paints nothing.
 
-### File view
-
-- The `FileDiff` is built from current content alone: every line a `context` row, no change rows, no emphasis, no folds.
-- The gutter shows the new-line number and a blank change bar.
-- Highlighting, wrapping, horizontal scroll, selection, and comments behave exactly as in Diff view.
-- A `binary` or `too_large` file degrades to a notice, worded `file too large` here and `file too large to diff` in Diff view.
-
 ### Markdown preview
 
-A markdown file adds a rendered preview, in both views:
+A markdown file adds a rendered preview:
 
 - The `preview` binding (default `m`) switches between source and rendered markdown (`markdown.md`).
 - A markdown file has a `.md` or `.markdown` extension, case-insensitive.
@@ -98,16 +91,11 @@ A markdown file adds a rendered preview, in both views:
 Entering carries the reading position, block-aligned, resolved against the painted render:
 
 - The preview opens at the block holding the cursor's current-content line, or the nearest block above it.
-- In Diff view, a row with no current-content line — a deletion, a fold — aligns by the nearest row above with one.
+- A row with no current-content line — a deletion, a fold — aligns by the nearest row above with one.
 - With no current-content line at or above the cursor, the preview opens at its top.
 - The horizontal offset always keeps its pre-entry value.
 
-Returning to source differs per view:
-
-- In Diff view, returning never moves the cursor, scroll, or folds. This holds for a forced return too.
-- In File view, returning puts the cursor on the top visible block's first source line, revealed.
-- In File view, a round-trip with no preview scroll input restores the exact source cursor and scroll. A refresh clamp is not a scroll input.
-- In File view, a forced return keeps the prior source position.
+Returning to source never moves the cursor, scroll, or folds. This holds for a forced return too.
 
 ### Color
 

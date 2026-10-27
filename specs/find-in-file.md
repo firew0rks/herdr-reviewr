@@ -23,10 +23,10 @@ Literal search within the open file in the read pane, opened with `ctrl+f`: ever
 
 ## The band
 
-- The `find` action opens the band over the `Changes` diff and the `All files` file view, from either pane. Its default key is `ctrl+f`, rebindable (`input.md`).
+- The `find` action opens the band over the `Changes` diff, from either pane. Its default key is `ctrl+f`, rebindable (`input.md`).
 - Opening the band focuses the read pane and clears a live selection (`diff-view.md`).
 - The band is one row at the foot of the read pane: the label `find`, the query with its caret, and the match count at the right. The read pane loses that row while the band is open.
-- The query is the search input's field: the comment editor's controls, newlines excluded, a paste's newlines flattened to spaces (`input.md`, `search.md`).
+- The query edits with the comment editor's controls, newlines excluded, a paste's newlines flattened to spaces (`input.md`).
 - An empty query shows a dim placeholder, lights nothing, and leaves the count blank.
 - While the band is open it owns the keymap. Every printable key is query text, so the review keys (`n`, `u`, `1`, …) lose their review action. Only the steps and `esc` act. Every other key is inert.
 - The find key is inert while composing a comment, in the comments list, and in the agent picker (`input.md`).
@@ -57,7 +57,7 @@ Literal search within the open file in the read pane, opened with `ctrl+f`: ever
 
 | the read pane shows                   | the find key            |
 | ------------------------------------- | ----------------------- |
-| a diff or file view with content rows | opens the band          |
+| a diff with content rows              | opens the band          |
 | a rendered markdown preview           | inert, it has no cursor |
 | a notice, or an empty file            | inert, nothing to find  |
 | no open file, or an empty changeset   | inert                   |
@@ -82,12 +82,12 @@ While the band is open, polls keep running underneath (`overview.md`).
 | `↑`           | step to the previous match |
 | `esc`         | close, the cursor stays    |
 
-The band shows its own one-row footer, `↑↓ match` and `esc`, the arrows combined like the search screen's pick (`search.md`). In the review, `ctrl+f find` sits in the footer's `go` band wherever the band would open (`input.md`).
+The band shows its own one-row footer, `↑↓ match` and `esc`, the arrows combined. In the review, `ctrl+f find` sits in the footer's `go` band wherever the band would open (`input.md`).
 
 ## Non-goals
 
-- No regex, glob, or fuzzy matching. The query is literal, unlike the search screen (`search.md`).
-- No cross-file search. That is the search screen (`search.md`).
+- No regex, glob, or fuzzy matching. The query is literal.
+- No cross-file search.
 - No replace. The viewer is read-only (`diff-view.md`).
 - No column cursor. The match unit is the row.
 - No commenting from the band. Close it, then comment on the landed line.
@@ -97,6 +97,5 @@ The band shows its own one-row footer, `↑↓ match` and `esc`, the arrows comb
 
 - [diff-view](./diff-view.md)
 - [input](./input.md)
-- [search](./search.md)
 - [theme](./theme.md)
 - [overview](./overview.md)

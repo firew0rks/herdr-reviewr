@@ -227,14 +227,11 @@ def run_bench(binary, repo, label, iters):
             dones.append(last_ms)
         results.append(result_row(name, firsts, dones))
 
-    tab_scenario("tab_enter_all_files", "2", "1")
     tab_scenario("tab_enter_changes", "1", "2")
     # The chased key's *painted* time is the acceptance metric: it includes any
     # reload a paint-first switch pushed past its own frame.
-    chained_scenario("tab_enter_all_files_then_f", "1", "2", "f")
+    chained_scenario("tab_enter_changes_then_f", "2", "1", "f")
     scenario("file_next_changes", "f", prep=["1"])
-    # All files: expand into the tree first so `f` walks real source files.
-    scenario("file_next_all_files", "f", prep=["2", "j", "\x1b[C", "j", "\x1b[C", "j"])
     s.close()
     return {"label": label, "repo": repo, "iterations": iters, "results": results}
 

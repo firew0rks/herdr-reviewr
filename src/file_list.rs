@@ -19,8 +19,6 @@ pub struct Row {
     /// joined with `/` (single-child directories fold into their child).
     pub name: String,
     pub kind: RowKind,
-    /// Whether git ignores this row's path — rendered dimmed in `All files` (file-list.md).
-    pub ignored: bool,
 }
 
 /// What a [`Row`] is: a directory (togglable) or a file (opens the read pane).
@@ -28,12 +26,12 @@ pub struct Row {
 pub enum RowKind {
     /// A directory: its full path keys its expansion state.
     Dir { path: String, expanded: bool },
-    /// A file: its index into the source `&[Entry]`, plus its annotation when changed.
-    File { index: usize, annotation: Option<Annotation> },
+    /// A file: its index into the source `&[Entry]`, plus its annotation.
+    File { index: usize, annotation: Annotation },
 }
 
-/// The change a file carries in the active scope, shown inline in the tree. Absent on an
-/// unchanged `All files` file (specs/file-list.md).
+/// The change a file carries in the active scope, shown inline in the tree
+/// (specs/file-list.md).
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Annotation {
     pub change: ChangeKind,
@@ -49,29 +47,21 @@ impl From<&ChangedFile> for Annotation {
     }
 }
 
-/// The navigator's source row: a path, plus the rename source and the scope annotation when
-/// it has one. `Changes` annotates every entry; `All files` annotates only changed files.
+/// The navigator's source row: a path, plus the rename source and the scope annotation.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Entry {
     pub path: String,
     pub previous_path: Option<String>,
-    pub annotation: Option<Annotation>,
-    /// Whether git ignores this path — drives dimming in `All files` (file-list.md).
-    pub ignored: bool,
-    /// A wholly-ignored directory placeholder whose children load lazily on expand; never
-    /// set on a `Changes` entry.
-    pub is_dir: bool,
+    pub annotation: Annotation,
 }
 
 impl Entry {
-    /// A `Changes` entry from a changed file: annotated and rename-aware.
+    /// An entry from a changed file: annotated and rename-aware.
     pub fn from_changed(f: &ChangedFile) -> Self {
         Self {
             path: f.path.clone(),
             previous_path: f.previous_path.clone(),
-            annotation: Some(Annotation::from(f)),
-            ignored: false,
-            is_dir: false,
+            annotation: Annotation::from(f),
         }
     }
 }
@@ -100,43 +90,24 @@ impl Row {
 struct Dir {
     dirs: BTreeMap<String, Dir>,
     files: BTreeMap<String, usize>,
-    /// Set when a wholly-ignored directory placeholder created this node — its row renders
-    /// dimmed (file-list.md). A directory derived from tracked file paths stays `false`.
-    ignored: bool,
 }
 
-/// Flatten `entries` into the visible tree rows. `default_expanded` sets a directory's
-/// resting state — `true` for `Changes` (expanded unless toggled), `false` for `All files`
-/// (collapsed unless toggled); `toggled` holds the paths flipped from that default.
-/// Single-child directories fold into their child; directories sort before files,
-/// alphabetically within a parent.
-pub fn build<S: BuildHasher>(
-    entries: &[Entry],
-    toggled: &HashSet<String, S>,
-    default_expanded: bool,
-) -> Vec<Row> {
+/// Flatten `entries` into the visible tree rows. A directory is expanded unless `collapsed`
+/// holds its path. Single-child directories fold into their child; directories sort before
+/// files, alphabetically within a parent.
+pub fn build<S: BuildHasher>(entries: &[Entry], collapsed: &HashSet<String, S>) -> Vec<Row> {
     let mut root = Dir::default();
     for (i, e) in entries.iter().enumerate() {
         insert(&mut root, e, i);
     }
     let mut rows = Vec::new();
-    flatten(&mut rows, &root, "", 0, toggled, default_expanded, entries);
+    flatten(&mut rows, &root, "", 0, collapsed, entries);
     rows
 }
 
-/// Insert `entry` at `index` into the tree, creating directories along the way. A directory
-/// placeholder (`is_dir`) creates its node and marks it ignored, holding no file — its
-/// children arrive later when the app expands it (file-list.md).
+/// Insert `entry` at `index` into the tree, creating directories along the way.
 fn insert(root: &mut Dir, entry: &Entry, index: usize) {
     let mut segments: Vec<&str> = entry.path.split('/').filter(|s| !s.is_empty()).collect();
-    if entry.is_dir {
-        let mut cur = root;
-        for seg in segments {
-            cur = cur.dirs.entry(seg.to_string()).or_default();
-        }
-        cur.ignored = entry.ignored;
-        return;
-    }
     let Some(base) = segments.pop() else { return };
     let mut cur = root;
     for seg in segments {
@@ -151,8 +122,7 @@ fn flatten<S: BuildHasher>(
     dir: &Dir,
     prefix: &str,
     depth: usize,
-    toggled: &HashSet<String, S>,
-    default_expanded: bool,
+    collapsed: &HashSet<String, S>,
     entries: &[Entry],
 ) {
     for (name, sub) in &dir.dirs {
@@ -161,15 +131,14 @@ fn flatten<S: BuildHasher>(
             // A single-child chain ending in one file folds into a file row, e.g. `a/b/x.rs`.
             rows.push(file_row(depth, format!("{display}/{fname}"), index, entries));
         } else {
-            let expanded = default_expanded ^ toggled.contains(&path);
+            let expanded = !collapsed.contains(&path);
             rows.push(Row {
                 depth,
                 name: display,
                 kind: RowKind::Dir { path: path.clone(), expanded },
-                ignored: node.ignored,
             });
             if expanded {
-                flatten(rows, node, &path, depth + 1, toggled, default_expanded, entries);
+                flatten(rows, node, &path, depth + 1, collapsed, entries);
             }
         }
     }
@@ -204,7 +173,6 @@ fn file_row(depth: usize, name: String, index: usize, entries: &[Entry]) -> Row 
         depth,
         name,
         kind: RowKind::File { index, annotation: entries[index].annotation.clone() },
-        ignored: entries[index].ignored,
     }
 }
 
@@ -232,14 +200,10 @@ mod tests {
         files.iter().map(Entry::from_changed).collect()
     }
 
-    /// Render the rows as `<depth>:<dir|file>:<name>` lines, for compact assertions. Uses the
-    /// `Changes` default (expanded unless toggled).
+    /// Render the rows as `<depth>:<dir|file>:<name>` lines, for compact assertions.
     fn shape(files: &[ChangedFile], collapsed: &HashSet<String>) -> Vec<String> {
-        shape_rows(&build(&entries(files), collapsed, true))
-    }
-
-    fn shape_rows(rows: &[super::Row]) -> Vec<String> {
-        rows.iter()
+        build(&entries(files), collapsed)
+            .iter()
             .map(|r| {
                 let kind = if r.file_index().is_some() { "file" } else { "dir" };
                 format!("{}:{}:{}", r.depth, kind, r.name)
@@ -283,74 +247,13 @@ mod tests {
     #[test]
     fn a_file_row_carries_its_source_index_and_stats() {
         let files = [file("z.rs"), file("a.rs")];
-        let rows = build(&entries(&files), &HashSet::new(), true);
+        let rows = build(&entries(&files), &HashSet::new());
         // Sorted alphabetically: a.rs first → source index 1, then z.rs → index 0.
         assert_eq!(rows[0].file_index(), Some(1));
         assert_eq!(rows[1].file_index(), Some(0));
         assert!(matches!(
             &rows[0].kind,
-            RowKind::File { annotation: Some(Annotation { change: ChangeKind::Modified, .. }), .. }
+            RowKind::File { annotation: Annotation { change: ChangeKind::Modified, .. }, .. }
         ));
-    }
-
-    #[test]
-    fn all_files_collapses_directories_by_default() {
-        // default_expanded = false: src/ is collapsed unless toggled, so its children hide.
-        let files = [file("src/app.rs"), file("src/ui.rs")];
-        assert_eq!(shape_rows(&build(&entries(&files), &HashSet::new(), false)), ["0:dir:src"]);
-        // Toggling src/ into the set expands it under the collapse-default policy.
-        let toggled: HashSet<String> = ["src".to_string()].into_iter().collect();
-        assert_eq!(
-            shape_rows(&build(&entries(&files), &toggled, false)),
-            ["0:dir:src", "1:file:app.rs", "1:file:ui.rs"]
-        );
-    }
-
-    #[test]
-    fn an_unannotated_entry_renders_without_a_marker() {
-        // An `All files` entry from a bare path renders without a marker or stats.
-        let entry = Entry {
-            path: "a.rs".into(),
-            previous_path: None,
-            annotation: None,
-            ignored: false,
-            is_dir: false,
-        };
-        let rows = build(&[entry], &HashSet::new(), false);
-        assert!(matches!(rows[0].kind, RowKind::File { annotation: None, .. }));
-    }
-
-    fn ignored_dir(path: &str) -> Entry {
-        Entry {
-            path: path.into(),
-            previous_path: None,
-            annotation: None,
-            ignored: true,
-            is_dir: true,
-        }
-    }
-
-    #[test]
-    fn an_ignored_dir_placeholder_renders_as_a_collapsed_ignored_row() {
-        // A wholly-ignored directory shows as one dimmed dir row, with no children until the
-        // app loads them on expand (file-list.md).
-        let rows = build(&[ignored_dir("target")], &HashSet::new(), false);
-        assert_eq!(rows.len(), 1);
-        assert!(rows[0].ignored, "the placeholder row is marked ignored (dimmed)");
-        assert!(matches!(rows[0].kind, RowKind::Dir { expanded: false, .. }));
-    }
-
-    #[test]
-    fn an_ignored_file_marks_its_row_ignored() {
-        let entry = Entry {
-            path: "build.log".into(),
-            previous_path: None,
-            annotation: None,
-            ignored: true,
-            is_dir: false,
-        };
-        let rows = build(&[entry], &HashSet::new(), false);
-        assert!(rows[0].ignored, "an ignored file row is dimmed");
-        assert!(matches!(rows[0].kind, RowKind::File { .. }));
     }
 }

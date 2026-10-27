@@ -63,8 +63,8 @@ pub struct Palette {
     pub ins_bg: Color,
     pub emph_del_bg: Color,
     pub emph_ins_bg: Color,
-    /// The search match highlight: a warm fill behind a matched substring, legible over a
-    /// plain row, a syntax-colored row, and the preview's banded hit line alike.
+    /// The find match highlight: a warm fill behind a matched substring, legible over a
+    /// plain row and a syntax-colored row alike.
     pub match_hl: Color,
 }
 

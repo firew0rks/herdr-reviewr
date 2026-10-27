@@ -135,7 +135,7 @@ Details:
 
 ## Failure semantics
 
-reviewr only reads, so every failure degrades to a clear state. `Changes` and `All files` are unaffected.
+reviewr only reads, so every failure degrades to a clear state. `Changes` is unaffected.
 
 - A failure on the same input keeps the visible snapshot and shows its remedy. With no snapshot, the remedy fills the tab.
 

@@ -12,7 +12,7 @@ Each doc states end-state truth: what must be true when a change is done, never 
 - Every list and table states its admission rule and contains the complete admitted set.
 - If a doc and the code disagree, the code is a wrong implementation of the doc's contract.
 
-For a full-system read, follow the dependency order: overview → review-model → config → diff-view, markdown, theme, file-list → tui → input → search → find-in-file → herdr-host, forge-host, forge-providers → pr-tab.
+For a full-system read, follow the dependency order: overview → review-model → config → diff-view, markdown, theme, file-list → tui → input → find-in-file → herdr-host, forge-host, forge-providers → pr-tab.
 
 ## Status
 
@@ -35,7 +35,6 @@ Each concern lives in the one doc that owns it. A change is woven into that doc,
 - `file-list.md` (`FL`) — owns the file navigator: the changed-files tree, selection, and presentation.
 - `tui.md` (`TUI`) — owns the terminal frame: layout, tabs, and refresh.
 - `input.md` (`INP`) — owns driving the review: the keymap, changeset traversal, the footer, and the comment editor.
-- `search.md` (`SR`) — owns the search overlay: the engine, the query, the results, and where a pick lands.
 - `find-in-file.md` (`FIF`) — owns in-file find: the band, literal matching, match-to-match stepping, and its continuity.
 - `pr-tab.md` (`PRT`) — owns the read-only PR mirror: its header, navigator, read pane, and refetch.
 - `issues-tab.md` (`IT`) — owns the linked-issues list: its admission rule, rows, read pane, and empty states.

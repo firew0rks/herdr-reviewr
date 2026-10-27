@@ -123,14 +123,14 @@ Details:
 ### Refresh
 
 - The first fetch starts when the panel opens.
-- A refetch fires on entering the tab, on the `refresh` binding (default `r`), and when the worktree ends a turn (`herdr-host.md`, HH-TURN-PER-WORKTREE) — an agent may have pushed or merged with no local trace. On the tab, a fallback poll refetches every 60 seconds. Off the tab, no polling.
+- A refetch fires on entering the tab, on the `refresh` binding (default `r`), and when the worktree ends a turn (`herdr-host.md`, HH-TURN-PER-WORKTREE) — an agent may have pushed or merged with no local trace. On the tab, herdr's `forge.updated` event refetches; under a herdr without a forge pool, or outside herdr, a fallback poll refetches every 60 seconds instead. Off the tab, no polling.
 - One fetch runs at a time. `refresh` cancels it and restarts. Any other trigger lets it finish and paint, then runs one fresh fetch.
 - A result shows only if everything it was fetched for — config, repository target, branch, pinned commits, branch names — still matches. Otherwise reviewr discards it and fetches again, on or off the tab.
 - Commits and pushes are freshness, never identity. They refetch behind the visible snapshot and never blank it: the same PR with newer work is stale, not wrong. The in-flight glyph covers the gap (`tui.md`).
 - The tab clears only when the repository target, origin, or checked-out branch changes. Then reviewr cannot prove the snapshot still belongs to this branch (`overview.md` Continuity).
 - A fetch that finds no PR keeps the snapshot while the pinned `HEAD` still is or contains the shown PR's head commit. A pruned remote branch never blanks the tab mid-session; pulling the merged base does.
 - Each fetch uses one validated config snapshot for host and base selection (→ CFG-ONE-SNAPSHOT, `config.md`).
-- Every fetch re-derives the snapshot in full. There is no cache beyond what is on screen.
+- Every fetch re-derives the snapshot in full. GitHub reads run through `herdr forge gh`, whose short server-side cache lets panes on one repo share a read; reviewr keeps no cache beyond what is on screen. A shown GitHub PR is named to the pool (`herdr forge refresh --pr`) so its checks changing raises the event.
 - Exiting reviewr stops scheduling and restores the terminal immediately. Nothing paints afterward.
 
 ## Failure semantics
@@ -161,7 +161,7 @@ reviewr only reads, so every failure degrades to a clear state. `Changes` and `A
 - No discovery of an unrecorded publication name on a non-`origin` remote.
 - No detection of forge-side renames or redirects. reviewr trusts the remote identity verbatim.
 - No remote-scoping of the tracked branch name. The bare name applies whichever remote it tracks.
-- No event subscription. The snapshot polls the CLI, no webhook or socket.
+- No webhook. The only event is herdr's `forge.updated`, from its own poll.
 - No server-version compatibility layer for self-hosted schemas.
 
 ## Related specs

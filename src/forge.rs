@@ -348,8 +348,9 @@ fn run_cli(cmd: &mut Command, cancelled: &AtomicBool) -> Result<String, CliError
 }
 
 /// Run explicitly targeted `gh` arguments in `repo` and return stdout or a classified failure.
+/// Through herdr's forge pool when there is one, so panes on one repo share a read.
 fn gh(repo: &Path, host: &str, args: &[&str], cancelled: &AtomicBool) -> Result<String, GhError> {
-    let mut cmd = Command::new("gh");
+    let mut cmd = crate::herdr::gh();
     cmd.current_dir(repo).args(args);
     run_provider(
         &mut cmd,
@@ -625,6 +626,9 @@ fn fetch_inner(
     let node = &detail["data"]["repository"]["pullRequest"];
     if node.is_null() {
         return Ok(PrView::NoPr);
+    }
+    if target.host == "github.com" {
+        crate::herdr::forge_watch(&format!("{}/{}", target.owner, target.name), number);
     }
     // Sync compares the fetch's pinned HEAD to the PR head, so a checkout or commit landing
     // mid-fetch never pairs one branch's PR with another branch's count.

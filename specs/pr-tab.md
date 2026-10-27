@@ -62,7 +62,7 @@ The tab is labeled `PR` on every forge. Body text, the chip, the read pane's tit
 
 ### Refresh
 
-- The tab fetches on open, on entering the tab, on `r`, and on the worktree's turn-end on any tab (`herdr-host.md`, HH-TURN-PER-WORKTREE), with a slow fallback timer while active. One fetch per turn keeps the tab fresh before it is entered. An ambient trigger rides a fetch already in flight: the ridden result still paints, and one trailing fetch follows it. `r` cancels the in-flight fetch and starts fresh. A fetch stuck past a minute is abandoned and replaced instead of joined. Its cadence is separate from the worktree poll (`tui.md`).
+- The tab fetches on open, on entering the tab, on `r`, and on the worktree's turn-end on any tab (`herdr-host.md`, HH-TURN-PER-WORKTREE), on herdr's `forge.updated` event while active (a slow fallback timer without a forge pool, `forge-host.md`). One fetch per turn keeps the tab fresh before it is entered. An ambient trigger rides a fetch already in flight: the ridden result still paints, and one trailing fetch follows it. `r` cancels the in-flight fetch and starts fresh. A fetch stuck past a minute is abandoned and replaced instead of joined. Its cadence is separate from the worktree poll (`tui.md`).
 - A refetch keeps your place: the cursor follows the selected comment by identity, and both pane scroll positions hold. A vanished comment clamps the cursor and resets the read pane.
 
 ## Non-goals

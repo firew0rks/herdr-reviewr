@@ -1,6 +1,6 @@
 //! herdr host integration: resolve the agent pane to send to, sample the agents turn
-//! tracking watches, ask herdr for the plugin config directory, and stamp/clear the
-//! pane's cosmetic `reviewr` label.
+//! tracking watches, ask herdr for the plugin config directory, stamp/clear the
+//! pane's cosmetic `reviewr` label, and read GitHub through herdr's forge pool.
 //!
 //! See `specs/herdr-host.md`. Uses the herdr CLI via `$HERDR_BIN_PATH`. The two agent readers
 //! ask different questions and neither narrows the other: [`send_target`] resolves candidates
@@ -10,10 +10,12 @@
 
 use std::collections::HashMap;
 use std::env;
-use std::process::Command;
-use std::sync::mpsc;
+use std::io::{BufRead, BufReader, Write};
+use std::os::unix::net::UnixStream;
+use std::process::{Command, Stdio};
+use std::sync::{LazyLock, Mutex, PoisonError, mpsc};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::logln;
 use crate::turn::Status;
@@ -440,6 +442,90 @@ fn pasted(text: &str) -> String {
 pub fn focus(pane: &str) -> Result<()> {
     herdr(&["agent", "focus", pane])?;
     Ok(())
+}
+
+/// Whether this herdr keeps a forge pool: one GitHub poller in the server that every plugin
+/// shares (`specs/forge-host.md` Refresh). An older herdr has no `forge` command, and outside
+/// herdr there is no server to ask.
+fn has_forge() -> bool {
+    static FORGE: LazyLock<bool> = LazyLock::new(|| {
+        env::var_os("HERDR_BIN_PATH").is_some()
+            && Command::new(herdr_bin())
+                .args(["forge", "help"])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .is_ok_and(|s| s.success())
+    });
+    *FORGE
+}
+
+/// The `gh` to read GitHub with: `herdr forge gh --`, which replays a read from the server's
+/// short cache and joins one already in flight, or plain `gh` without a forge pool.
+pub fn gh() -> Command {
+    if !has_forge() {
+        return Command::new("gh");
+    }
+    let mut cmd = Command::new(herdr_bin());
+    cmd.args(["forge", "gh", "--"]);
+    cmd
+}
+
+/// Ask the pool to watch `pr`'s checks too. The pool only reports changes to what it fetches,
+/// and it fetches checks only for a PR someone asked about in the last half hour, so the ask
+/// repeats inside that window and at once for a different PR.
+pub fn forge_watch(repo: &str, pr: u64) {
+    static LAST: Mutex<Option<(String, Instant)>> = Mutex::new(None);
+    if !has_forge() {
+        return;
+    }
+    let key = format!("{repo}#{pr}");
+    let mut last = LAST.lock().unwrap_or_else(PoisonError::into_inner);
+    if last.as_ref().is_some_and(|(k, at)| *k == key && at.elapsed() < Duration::from_mins(20)) {
+        return;
+    }
+    *last = Some((key, Instant::now()));
+    drop(herdr_on_thread(
+        ["forge", "refresh", "--repo", repo, "--pr", &pr.to_string()].map(String::from).into(),
+    ));
+}
+
+/// A tick on every `forge.updated` event, and one after each (re)connect, since events missed
+/// while disconnected are gone. The sender drops when there is nothing to subscribe to, so a
+/// disconnected receiver means the caller keeps its own poll.
+pub fn forge_events() -> mpsc::Receiver<()> {
+    let (tx, rx) = mpsc::channel();
+    let Some(path) = env::var_os("HERDR_SOCKET_PATH").filter(|_| has_forge()) else {
+        return rx;
+    };
+    thread::spawn(move || {
+        loop {
+            if let Ok(mut sock) = UnixStream::connect(&path) {
+                let req = r#"{"id":"reviewr","method":"events.subscribe","params":{"subscriptions":[{"type":"forge.updated"}]}}"#;
+                if writeln!(sock, "{req}").is_ok() {
+                    let mut lines = BufReader::new(sock).lines();
+                    // A herdr without the event rejects the type; retrying won't change that.
+                    if lines.next().and_then(Result::ok).unwrap_or_default().contains("\"error\"") {
+                        return;
+                    }
+                    if tx.send(()).is_err() {
+                        return;
+                    }
+                    for line in lines {
+                        if line.map_or(true, |l| l.contains("events_lost")) {
+                            break;
+                        }
+                        if tx.send(()).is_err() {
+                            return;
+                        }
+                    }
+                }
+            }
+            thread::sleep(Duration::from_secs(5));
+        }
+    });
+    rx
 }
 
 #[cfg(test)]

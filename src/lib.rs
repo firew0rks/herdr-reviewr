@@ -198,10 +198,9 @@ fn ready_app(cfg: &Config, plugin_config: PluginConfig) -> App {
 /// A transient status message (e.g. "sent 3 comments") fades after this long idle.
 const STATUS_TTL: Duration = Duration::from_secs(4);
 
-/// While the `PR` tab is active, refetch the forge at least this often — a fallback for
-/// forge-side changes with no local signal (a reviewer's comment). Local pushes and forge PR
-/// actions refresh sooner, on the worktree's turn-end, so this cadence is the slow safety net
-/// (specs/forge-host.md).
+/// Without herdr's forge pool, refetch at least this often while a forge tab is active — a
+/// fallback for forge-side changes with no local signal (a reviewer's comment). With the pool,
+/// its `forge.updated` event is that signal instead (specs/forge-host.md).
 const PR_POLL: Duration = Duration::from_mins(1);
 
 /// How long an in-flight PR fetch may run before a refresh trigger stops waiting on it.
@@ -683,6 +682,7 @@ fn event_loop(
     let poll = cfg.poll;
     let mut last_poll = Instant::now();
     let mut last_pr_poll = Instant::now();
+    let forge_events = crate::herdr::forge_events();
     // Local input probes and forge reads run on workers. A completed fetch is applied only after
     // a fresh probe proves its complete input still matches (`specs/forge-host.md`).
     let (probe_tx, probe_rx) =
@@ -927,7 +927,15 @@ fn event_loop(
             // before it can paint, while the generation still coalesces repeated triggers into
             // one fresh fetch. Ambient triggers ride in-flight work and arm a trailing fetch
             // (`request_refresh`).
-            let fallback_poll = app.tab.is_forge() && last_pr_poll.elapsed() >= PR_POLL;
+            let forge_changed = match forge_events.try_recv() {
+                Ok(()) => {
+                    while forge_events.try_recv().is_ok() {}
+                    true
+                }
+                Err(mpsc::TryRecvError::Empty) => false,
+                Err(mpsc::TryRecvError::Disconnected) => last_pr_poll.elapsed() >= PR_POLL,
+            };
+            let fallback_poll = app.tab.is_forge() && forge_changed;
             let refresh =
                 app.pr_pending.take().or(fallback_poll.then_some(crate::app::RefreshKind::Ambient));
             if let Some(kind) = refresh {

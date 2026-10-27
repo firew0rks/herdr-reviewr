@@ -21,6 +21,7 @@ command = ["bash", "herdr/install.sh"]
 id = "pane"
 title = "reviewr"
 placement = "split"
+full_width = true
 command = ["sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/bin/herdr-reviewr\""]
 
 # A herdr restart hands every reviewr pane back as a plain shell: the pane, its label and its

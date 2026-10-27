@@ -4,7 +4,16 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.30.1-1] (firew0rks fork)
+
+### Changed
+- **GitHub reads go through herdr's forge pool.** Inside a herdr with `herdr forge`, the PR fetch
+  runs through `herdr forge gh` (one shared, cached poller) and refreshes on `forge.updated`
+  instead of a 60-second timer. An older herdr, or none, keeps plain `gh` and the timer.
+- **Tabs are Changes, PR and Issues**, keyed `1`, `2`, `3`.
+
+### Removed
+- **The Files tab and the `/` search screen**, whose picks opened in it.
 
 ### Added
 - **Panes come back after a herdr restart.** A restart used to leave every reviewr pane as a bare

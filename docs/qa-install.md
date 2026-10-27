@@ -63,4 +63,4 @@ rm herdr-reviewr && mv herdr-reviewr.staging herdr-reviewr
 ```
 
 Then close and reopen the panes, same as any other swap. A full reinstall
-(`herdr plugin install persiyanov/herdr-reviewr`) also restores the released binary.
+(`herdr plugin install firew0rks/herdr-reviewr --ref feat/issues-tab`) also restores the released binary.
